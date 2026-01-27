@@ -31,6 +31,10 @@ def start(port: int = 8000):
 
         print("🦥 Opening Unsloth UI...")
         output.serve_kernel_port_as_window(port)
-        print(f"🦥 Open http://localhost:{port} in your browser")
+        print("=" * 50)
+        print(
+            f"🦥 Open http://localhost:{port} in your browser to access Unsloth Studio"
+        )
+        print("=" * 50)
     except ImportError:
         print(f"🦥 Open http://localhost:{port} in your browser")

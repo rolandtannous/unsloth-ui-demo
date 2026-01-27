@@ -1,16 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../services/api';
 import SystemInfo from '../components/SystemInfo';
+import type { HealthResponse, EchoResponse, Model } from '../types';
 
-function HomePage() {
-  const [models, setModels] = useState([]);
-  const [healthStatus, setHealthStatus] = useState(null);
+const HomePage: React.FC = () => {
+  const [models, setModels] = useState<Model[]>([]);
+  const [healthStatus, setHealthStatus] = useState<HealthResponse | null>(null);
   const [echoText, setEchoText] = useState('');
-  const [echoResponse, setEchoResponse] = useState(null);
+  const [echoResponse, setEchoResponse] = useState<EchoResponse | null>(null);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    // Load initial data
     api.health().then(setHealthStatus).catch(console.error);
     api.getModels().then((data) => setModels(data.models)).catch(console.error);
   }, []);
@@ -26,6 +26,12 @@ function HomePage() {
       console.error(err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      handleEcho();
     }
   };
 
@@ -63,7 +69,7 @@ function HomePage() {
             onChange={(e) => setEchoText(e.target.value)}
             placeholder="Type something to test the API..."
             className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-unsloth-500 focus:border-transparent"
-            onKeyPress={(e) => e.key === 'Enter' && handleEcho()}
+            onKeyPress={handleKeyPress}
           />
           <button
             onClick={handleEcho}
@@ -113,6 +119,6 @@ function HomePage() {
       </div>
     </div>
   );
-}
+};
 
 export default HomePage;

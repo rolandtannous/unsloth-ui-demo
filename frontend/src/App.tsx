@@ -1,26 +1,39 @@
-import React from 'react';
-import logo from './logo.svg';
-import './App.css';
+import React, { useState } from 'react';
+import Header from './components/Header';
+import HomePage from './pages/HomePage';
+import TrainingPage from './pages/TrainingPage';
 
-function App() {
+const App: React.FC = () => {
+  const [currentPage, setCurrentPage] = useState('home');
+
+  const renderPage = () => {
+    switch (currentPage) {
+      case 'training':
+        return <TrainingPage />;
+      case 'home':
+      default:
+        return <HomePage />;
+    }
+  };
+
   return (
-    <div className="App">
-      <header className="App-header">
-        <img src={logo} className="App-logo" alt="logo" />
-        <p>
-          Edit <code>src/App.tsx</code> and save to reload.
-        </p>
-        <a
-          className="App-link"
-          href="https://reactjs.org"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Learn React
-        </a>
-      </header>
+    <div className="min-h-screen bg-gray-50">
+      <Header currentPage={currentPage} setCurrentPage={setCurrentPage} />
+
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {renderPage()}
+      </main>
+
+      {/* Footer */}
+      <footer className="bg-white border-t border-gray-200 mt-12">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+          <p className="text-center text-sm text-gray-500">
+            🦥 Unsloth UI Demo • Made with FastAPI + React + TypeScript + Tailwind CSS
+          </p>
+        </div>
+      </footer>
     </div>
   );
-}
+};
 
 export default App;

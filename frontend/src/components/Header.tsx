@@ -1,6 +1,11 @@
 import React from 'react';
 
-function Header({ currentPage, setCurrentPage }) {
+interface HeaderProps {
+  currentPage: string;
+  setCurrentPage: (page: string) => void;
+}
+
+const Header: React.FC<HeaderProps> = ({ currentPage, setCurrentPage }) => {
   const navItems = [
     { id: 'home', label: '🏠 Home' },
     { id: 'training', label: '🚀 Training' },
@@ -39,6 +44,6 @@ function Header({ currentPage, setCurrentPage }) {
       </div>
     </header>
   );
-}
+};
 
 export default Header;

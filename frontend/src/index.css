@@ -1,24 +1,21 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* frontend/src/index.css */
+@import "tailwindcss";
+
+
+@theme {
+  --color-unsloth-50: #f0fdf4;
+  --color-unsloth-100: #dcfce7;
+  --color-unsloth-200: #bbf7d0;
+  --color-unsloth-300: #86efac;
+  --color-unsloth-400: #4ade80;
+  --color-unsloth-500: #22c55e;
+  --color-unsloth-600: #16a34a;
+  --color-unsloth-700: #15803d;
+  --color-unsloth-800: #166534;
+  --color-unsloth-900: #14532d;
+}
 
 body {
-  @apply bg-gray-50;
-}
-
-/* Custom scrollbar */
-::-webkit-scrollbar {
-  width: 8px;
-}
-
-::-webkit-scrollbar-track {
-  @apply bg-gray-100;
-}
-
-::-webkit-scrollbar-thumb {
-  @apply bg-gray-300 rounded-full;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  @apply bg-gray-400;
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
 }

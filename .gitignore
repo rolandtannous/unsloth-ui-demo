@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+*.egg
+.env
+venv/
+.venv/
+
+# Node
+frontend/node_modules/
+frontend/.env.local
+frontend/.env
+
+# Build outputs - DO NOT IGNORE, needed for Colab
+# frontend/build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Testing
+coverage/
+.coverage
+htmlcov/

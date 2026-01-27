@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { api } from '../services/api';
+import type { TrainingConfig, TrainingStatus } from '../types';
 
-function TrainingPage() {
-  const [config, setConfig] = useState({
+const TrainingPage: React.FC = () => {
+  const [config, setConfig] = useState<TrainingConfig>({
     model_name: 'unsloth/llama-3-8b-bnb-4bit',
     dataset: 'alpaca',
     max_seq_length: 2048,
@@ -13,14 +14,14 @@ function TrainingPage() {
     lora_alpha: 16,
   });
 
-  const [status, setStatus] = useState(null);
+  const [status, setStatus] = useState<TrainingStatus | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const handleInputChange = (e) => {
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
     setConfig((prev) => ({
       ...prev,
-      [name]: value,
+      [name]: name === 'model_name' || name === 'dataset' ? value : Number(value),
     }));
   };
 
@@ -30,7 +31,7 @@ function TrainingPage() {
       const response = await api.startTraining(config);
       setStatus(response);
     } catch (err) {
-      setStatus({ status: 'error', message: err.message });
+      setStatus({ status: 'error', message: err instanceof Error ? err.message : 'Unknown error' });
     } finally {
       setLoading(false);
     }
@@ -248,6 +249,6 @@ function TrainingPage() {
       </div>
     </div>
   );
-}
+};
 
 export default TrainingPage;

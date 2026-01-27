@@ -44,9 +44,9 @@ def run_server(host: str = "0.0.0.0", port: int = 8000, frontend_path: Path = No
     thread.start()
     time.sleep(3)
 
-    print("")
+    # print("")
     print("=" * 50)
-    print(f"🦥 Server is running on http://{host}:{port}")
+    print(f"🦥 Backend Server started on port {port}")
     print("=" * 50)
 
     return app

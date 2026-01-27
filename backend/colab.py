@@ -48,16 +48,16 @@ from pathlib import Path
 def get_colab_url(port: int = 8000) -> str:
     """
     Get the actual Colab proxy URL for a port.
-
-    Returns:
-        The real URL like https://8000-m-s-xxx.us-central1-1.prod.colab.dev/
     """
     try:
         from google.colab.output import eval_js
+        import asyncio
 
-        url = eval_js(f"google.colab.kernel.proxyPort({port})")
-        return url
-    except Exception:
+        # Use with timeout to prevent hanging
+        url = eval_js(f"google.colab.kernel.proxyPort({port})", timeout_sec=5)
+        return url if url else f"http://localhost:{port}"
+    except Exception as e:
+        print(f"Note: Could not get Colab URL ({e})")
         return f"http://localhost:{port}"
 
 
@@ -65,6 +65,7 @@ def show_link(port: int = 8000):
     """Display a styled clickable link to the UI."""
     from IPython.display import display, HTML
 
+    # Try to get real URL, fallback to localhost
     url = get_colab_url(port)
 
     html = f"""
@@ -76,7 +77,7 @@ def show_link(port: int = 8000):
         <a href="{url}" target="_blank"
            style="display: inline-block; padding: 14px 28px; background: white; color: #16a34a;
                   text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 16px;
-                  box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: transform 0.2s;">
+                  box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
             🚀 Open Unsloth UI
         </a>
         <p style="color: rgba(255,255,255,0.9); margin: 16px 0 0 0; font-size: 13px;
@@ -91,26 +92,28 @@ def show_link(port: int = 8000):
 def start(port: int = 8000):
     """
     Start Unsloth UI server in Colab and display the URL.
-
-    Usage:
-        from colab import start
-        start()
     """
     import sys
+
+    print("🦥 Starting Unsloth UI...")
 
     # Add backend to path
     backend_path = str(Path(__file__).parent)
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
 
+    print("   Loading backend...")
     from run import run_server
 
     # Auto-detect frontend path
     repo_root = Path(__file__).parent.parent
     frontend_path = repo_root / "frontend" / "build"
 
+    print("   Starting server...")
     # Start server silently
     run_server(host="0.0.0.0", port=port, frontend_path=frontend_path, silent=True)
+
+    print("   Server started!")
 
     # Show the clickable link with real URL
     show_link(port)

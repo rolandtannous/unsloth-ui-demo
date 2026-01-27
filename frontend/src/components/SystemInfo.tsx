@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../services/api';
+import type { SystemInfo as SystemInfoType } from '../types';
 
-function SystemInfo() {
-  const [systemInfo, setSystemInfo] = useState(null);
+const SystemInfo: React.FC = () => {
+  const [systemInfo, setSystemInfo] = useState<SystemInfoType | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     loadSystemInfo();
@@ -58,7 +59,7 @@ function SystemInfo() {
         <div className="bg-gray-50 rounded-lg p-4">
           <p className="text-sm text-gray-500 mb-1">CPU Cores</p>
           <p className="text-2xl font-bold text-gray-900">
-            {systemInfo?.cpu_count || 'N/A'}
+            {systemInfo?.cpu_count ?? 'N/A'}
           </p>
         </div>
 
@@ -66,12 +67,12 @@ function SystemInfo() {
         <div className="bg-gray-50 rounded-lg p-4">
           <p className="text-sm text-gray-500 mb-1">Memory</p>
           <p className="text-2xl font-bold text-gray-900">
-            {systemInfo?.memory?.total_gb || 'N/A'} GB
+            {systemInfo?.memory?.total_gb ?? 'N/A'} GB
           </p>
           <div className="mt-2 w-full bg-gray-200 rounded-full h-2">
             <div
               className="bg-unsloth-500 h-2 rounded-full"
-              style={{ width: `${systemInfo?.memory?.percent_used || 0}%` }}
+              style={{ width: `${systemInfo?.memory?.percent_used ?? 0}%` }}
             ></div>
           </div>
           <p className="text-xs text-gray-500 mt-1">
@@ -85,7 +86,7 @@ function SystemInfo() {
           {systemInfo?.gpu?.available ? (
             <div>
               <p className="text-lg font-bold text-gray-900">
-                {systemInfo.gpu.devices[0]?.name || 'Available'}
+                {systemInfo.gpu.devices[0]?.name ?? 'Available'}
               </p>
               <p className="text-sm text-gray-600">
                 {systemInfo.gpu.devices[0]?.memory_total_gb} GB VRAM
@@ -102,6 +103,6 @@ function SystemInfo() {
       </p>
     </div>
   );
-}
+};
 
 export default SystemInfo;

@@ -1,7 +1,28 @@
-/* frontend/src/index.css */
+/* /* frontend/src/index.css */
+/* @import "tailwindcss"; */
+/**/
+/**/
+/* @theme { */
+/*   --color-unsloth-50: #f0fdf4; */
+/*   --color-unsloth-100: #dcfce7; */
+/*   --color-unsloth-200: #bbf7d0; */
+/*   --color-unsloth-300: #86efac; */
+/*   --color-unsloth-400: #4ade80; */
+/*   --color-unsloth-500: #22c55e; */
+/*   --color-unsloth-600: #16a34a; */
+/*   --color-unsloth-700: #15803d; */
+/*   --color-unsloth-800: #166534; */
+/*   --color-unsloth-900: #14532d; */
+/* } */
+/**/
+/* body { */
+/*   margin: 0; */
+/*   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; */
+/* } */
+
 @import "tailwindcss";
 
-
+/* Custom theme variables for Tailwind v4 */
 @theme {
   --color-unsloth-50: #f0fdf4;
   --color-unsloth-100: #dcfce7;
@@ -18,4 +39,6 @@
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }

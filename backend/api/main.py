@@ -3,16 +3,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pathlib import Path
+from datetime import datetime
 import torch
 import platform
 import psutil
-from datetime import datetime
 
 # Create FastAPI app
-app = FastAPI(
-    title="Unsloth UI Demo",
-    version="1.0.0",
-)
+app = FastAPI(title="Unsloth UI Demo", version="1.0.0")
 
 # CORS
 app.add_middleware(
@@ -100,7 +97,7 @@ async def list_models():
 async def start_training(config: dict):
     return {
         "status": "started",
-        "job_id": "demo_job_001",
+        "job_id": f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
         "message": "Training simulation started (this is a demo)",
     }
 
@@ -112,26 +109,29 @@ async def get_training_status():
 
 # ============ Serve Frontend ============
 
-# Vite builds to 'build' folder (we configured this in vite.config.ts)
-FRONTEND_BUILD = Path(__file__).parent.parent.parent / "frontend" / "build"
 
-if FRONTEND_BUILD.exists():
-    # Serve assets folder
-    assets_dir = FRONTEND_BUILD / "assets"
-    if assets_dir.exists():
-        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+def setup_frontend(app: FastAPI, build_path: Path):
+    """Mount frontend static files"""
+    if build_path.exists():
+        # Mount assets
+        assets_dir = build_path / "assets"
+        if assets_dir.exists():
+            app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 
-    @app.get("/")
-    async def serve_root():
-        return FileResponse(FRONTEND_BUILD / "index.html")
+        @app.get("/")
+        async def serve_root():
+            return FileResponse(build_path / "index.html")
 
-    @app.get("/{full_path:path}")
-    async def serve_frontend(full_path: str):
-        if full_path.startswith("api"):
-            return {"error": "API endpoint not found"}
+        @app.get("/{full_path:path}")
+        async def serve_frontend(full_path: str):
+            if full_path.startswith("api"):
+                return {"error": "API endpoint not found"}
 
-        file_path = FRONTEND_BUILD / full_path
-        if file_path.is_file():
-            return FileResponse(file_path)
+            file_path = build_path / full_path
+            if file_path.is_file():
+                return FileResponse(file_path)
 
-        return FileResponse(FRONTEND_BUILD / "index.html")
+            return FileResponse(build_path / "index.html")
+
+        return True
+    return False

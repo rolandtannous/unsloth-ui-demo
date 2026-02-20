@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "ui-roland-test"
+version = "0.1.0"
+description = "Unsloth - Fine-tune LLMs faster"
+requires-python = ">=3.9"
+dependencies = [
+    "fastapi>=0.100.0",
+    "uvicorn>=0.27.0",
+    "psutil",
+    "nest-asyncio>=1.5.8",
+]
+
+[project.scripts]
+unsloth = "unsloth.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["unsloth*"]
+
+[tool.setuptools.package-data]
+unsloth = ["studio/frontend/build/**/*"]

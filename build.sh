@@ -32,7 +32,14 @@ rm -rf "$PACKAGE_BUILD_DIR"
 cp -r "$FRONTEND_DIR/build" "$PACKAGE_BUILD_DIR"
 echo "Copied to $PACKAGE_BUILD_DIR"
 
-echo "=== Step 3: Build Python wheel ==="
+echo "=== Step 3: Copy requirements into Python package ==="
+REQS_SRC="$SCRIPT_DIR/backend/requirements"
+REQS_DST="$SCRIPT_DIR/roland_ui_demo/requirements"
+mkdir -p "$REQS_DST"
+cp "$REQS_SRC"/*.txt "$REQS_DST/"
+echo "Copied requirements to $REQS_DST"
+
+echo "=== Step 4: Build Python wheel ==="
 cd "$SCRIPT_DIR"
 
 # Clean previous builds
@@ -47,7 +54,7 @@ echo "Sdist: $(ls dist/*.tar.gz)"
 
 if [ "${1:-}" = "publish" ]; then
     echo ""
-    echo "=== Step 4: Upload to PyPI ==="
+    echo "=== Step 5: Upload to PyPI ==="
     python -m twine upload dist/*
     echo "Published to PyPI!"
 fi

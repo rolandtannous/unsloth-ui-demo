@@ -146,28 +146,19 @@ echo "✅ Using $BEST_PY ($BEST_VER)"
 install_python_deps() {
     run_quiet "pip upgrade" pip install --upgrade pip
 
-    echo "   [1/6] Installing unsloth-zoo + unsloth..."
-    run_quiet "pip install base" pip install -r "$REQS_DIR/base.txt"
+    # Copy requirements into the Python package (needed for editable install)
+    REQS_DST="$SCRIPT_DIR/roland_ui_demo/requirements"
+    mkdir -p "$REQS_DST"
+    cp "$REQS_DIR"/*.txt "$REQS_DST/"
 
-    echo "   [2/6] Installing extras..."
-    run_quiet "pip install extras" pip install --no-cache-dir -r "$REQS_DIR/extras.txt"
+    # Lightweight editable install — gets the CLI entry point + lightweight deps
+    # (does NOT install unsloth/torch/etc., those are in the requirement files)
+    echo "   Installing CLI entry point..."
+    run_quiet "pip install -e" pip install -e "$SCRIPT_DIR"
 
-    echo "   [3/6] Installing extras (no-deps)..."
-    run_quiet "pip install extras-no-deps" pip install --no-deps --no-cache-dir -r "$REQS_DIR/extras-no-deps.txt"
-
-    echo "   [4/6] Force-reinstalling overrides (torchao, transformers)..."
-    run_quiet "pip install overrides" pip install --force-reinstall --no-cache-dir -r "$REQS_DIR/overrides.txt"
-
-    echo "   [5/6] Installing triton kernels (from source, no-deps)..."
-    run_quiet "pip install triton_kernels" pip install --no-deps -r "$REQS_DIR/triton-kernels.txt"
-
-    # Patch: override llama_cpp.py with fix from unsloth-zoo main branch
-    LLAMA_CPP_DST="$(pip show unsloth-zoo | grep -i '^Location:' | awk '{print $2}')/unsloth_zoo/llama_cpp.py"
-    curl -sSL "https://raw.githubusercontent.com/unslothai/unsloth-zoo/refs/heads/main/unsloth_zoo/llama_cpp.py" \
-        -o "$LLAMA_CPP_DST"
-
-    echo "   [6/6] Installing studio dependencies..."
-    run_quiet "pip install studio" pip install -r "$REQS_DIR/studio.txt"
+    # Use the CLI's install command for ordered heavy dependency installation
+    echo "   Running ordered dependency installation..."
+    roland-ui-demo install
 }
 
 if [ "$IS_COLAB" = true ]; then
@@ -194,15 +185,7 @@ else
 fi
 
 # ══════════════════════════════════════════════
-# Step 4: Install the studio package (CLI entry point)
-# ══════════════════════════════════════════════
-echo ""
-echo "Installing studio package..."
-pip install -e "$SCRIPT_DIR"
-echo "✅ CLI entry point registered"
-
-# ══════════════════════════════════════════════
-# Step 5: Done
+# Step 4: Done
 # ══════════════════════════════════════════════
 echo ""
 echo "╔══════════════════════════════════════╗"

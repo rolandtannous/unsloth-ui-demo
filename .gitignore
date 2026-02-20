@@ -31,6 +31,9 @@ Thumbs.db
 *.log
 npm-debug.log*
 
+# Requirements build artifacts (canonical source: backend/requirements/)
+roland_ui_demo/requirements/*.txt
+
 # Testing
 coverage/
 .coverage

@@ -7,11 +7,11 @@ name = "ui-roland-test"
 version = "0.1.0"
 description = "Unsloth - Fine-tune LLMs faster"
 requires-python = ">=3.9"
-# NOTE: Only list the lightweight studio deps here.
-# unsloth, unsloth-zoo, torch, triton, etc. are installed by setup.sh
-# which needs specific install order, --force-reinstall, --no-deps, etc.
-# that pip's dependency resolver cannot express.
-# See build_requirements/ for the full dependency chain.
+# NOTE: Only list lightweight deps that are safe for pip to resolve on its own.
+# Heavy/order-sensitive deps (unsloth, torch, torchao, triton, etc.) are
+# installed by `roland-ui-demo install` which runs the requirement files in
+# backend/requirements/ sequentially with --force-reinstall / --no-deps flags.
+# See roland_ui_demo/installer.py for the full ordered dependency chain.
 dependencies = [
     "typer",
     "fastapi>=0.100.0",
@@ -36,4 +36,7 @@ where = ["."]
 include = ["roland_ui_demo*"]
 
 [tool.setuptools.package-data]
-roland_ui_demo = ["studio/frontend/build/**/*"]
+roland_ui_demo = [
+    "studio/frontend/build/**/*",
+    "requirements/*.txt",
+]

@@ -158,7 +158,7 @@ install_python_deps() {
 
     # Use the CLI's install command for ordered heavy dependency installation
     echo "   Running ordered dependency installation..."
-    ui-roland-test studio install
+    unsloth-roland-test studio install
 }
 
 if [ "$IS_COLAB" = true ]; then
@@ -197,6 +197,6 @@ else
     echo "║ Activate your venv, then:            ║"
     echo "║                                      ║"
     echo "║   source .venv/bin/activate           ║"
-    echo "║   ui-roland-test studio               ║"
+    echo "║   unsloth-roland-test studio               ║"
 fi
 echo "╚══════════════════════════════════════╝"

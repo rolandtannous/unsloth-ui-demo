@@ -29,7 +29,7 @@ dependencies = [
 ]
 
 [project.scripts]
-ui-roland-test = "roland_ui_demo.cli:main"
+unsloth-roland-test = "roland_ui_demo.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

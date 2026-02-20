@@ -6,7 +6,7 @@ import argparse
 
 def main():
     parser = argparse.ArgumentParser(
-        prog="ui-roland-test",
+        prog="unsloth-roland-test",
         description="Unsloth Studio CLI",
     )
     subparsers = parser.add_subparsers(dest="command", help="Available commands")

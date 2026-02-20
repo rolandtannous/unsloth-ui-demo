@@ -3,6 +3,9 @@
 # Build script: compiles the React frontend, bundles it into the Python package,
 # and builds a wheel ready for PyPI upload.
 #
+# This only builds the distributable wheel. It does NOT install unsloth/torch/etc.
+# For full environment setup (unsloth, torch, triton, etc.), use setup.sh first.
+#
 # Usage:
 #   ./build.sh          # Build wheel only
 #   ./build.sh publish   # Build wheel and upload to PyPI

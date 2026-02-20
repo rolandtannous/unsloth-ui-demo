@@ -8,14 +8,24 @@ version = "0.1.0"
 description = "Unsloth - Fine-tune LLMs faster"
 requires-python = ">=3.9"
 # NOTE: Only list the lightweight studio deps here.
-# unsloth, unsloth-zoo, torch, etc. are installed by setup.sh
+# unsloth, unsloth-zoo, torch, triton, etc. are installed by setup.sh
 # which needs specific install order, --force-reinstall, --no-deps, etc.
 # that pip's dependency resolver cannot express.
+# See build_requirements/ for the full dependency chain.
 dependencies = [
+    "typer",
     "fastapi>=0.100.0",
     "uvicorn>=0.27.0",
+    "pydantic",
     "psutil",
     "nest-asyncio>=1.5.8",
+    "matplotlib",
+    "pandas",
+    "datasets==4.3.0",
+    "pyjwt",
+    "easydict",
+    "addict",
+    "gradio>=4.0.0",
 ]
 
 [project.scripts]

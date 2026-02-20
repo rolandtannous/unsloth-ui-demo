@@ -12,6 +12,8 @@ dependencies = [
     "uvicorn>=0.27.0",
     "psutil",
     "nest-asyncio>=1.5.8",
+    "unsloth",
+    "unsloth-zoo",
 ]
 
 [project.scripts]

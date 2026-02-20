@@ -15,11 +15,11 @@ dependencies = [
 ]
 
 [project.scripts]
-unsloth = "unsloth.cli:main"
+roland-ui-demo = "roland_ui_demo.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["unsloth*"]
+include = ["roland_ui_demo*"]
 
 [tool.setuptools.package-data]
-unsloth = ["studio/frontend/build/**/*"]
+roland_ui_demo = ["studio/frontend/build/**/*"]

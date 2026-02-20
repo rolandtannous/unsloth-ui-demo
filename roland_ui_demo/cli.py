@@ -16,7 +16,7 @@ def main():
     args = parser.parse_args()
 
     if args.command == "studio":
-        from unsloth.studio.backend.main import start_studio
+        from roland_ui_demo.studio.backend.main import start_studio
 
         start_studio(host=args.host, port=args.port)
     else:

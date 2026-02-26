@@ -16,14 +16,6 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
-IS_WINDOWS = platform.system() == "Windows"
-
-# Packages that are skipped on Windows (via environment markers in requirements)
-# but may need manual installation. Listed here to print helpful warnings.
-WINDOWS_SKIPPED_PACKAGES = {
-    "open_spiel": "https://openspiel.readthedocs.io/en/latest/windows.html",
-}
-
 from roland_ui_demo.requirements import get_requirements_dir
 from roland_ui_demo.scripts import get_scripts_dir
 
@@ -208,13 +200,6 @@ def run_install(
         except RuntimeError as e:
             print(f"❌ {e}")
             return 1
-
-        # After extras step: notify about Windows-skipped packages
-        if i == 2 and IS_WINDOWS and WINDOWS_SKIPPED_PACKAGES:
-            print("  ⚠️  The following packages were skipped on Windows (no pre-built wheel):")
-            for pkg, url in WINDOWS_SKIPPED_PACKAGES.items():
-                print(f"     - {pkg}  (see: {url})")
-            print()
 
         # Apply patch after step 5 (triton-kernels), before step 6 (studio)
         if i == 5 and not skip_patch:

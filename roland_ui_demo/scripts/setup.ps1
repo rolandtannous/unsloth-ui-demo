@@ -18,8 +18,19 @@ $PackageDir = Split-Path -Parent $ScriptDir
 $FrontendDir = Join-Path $ScriptDir "..\..\frontend"
 $IsPipInstall = -not (Test-Path $FrontendDir)
 
-# Helper: refresh PATH from registry (picks up changes from winget installs)
-function Refresh-Path {
+# Helper: reload ALL environment variables from registry.
+# Picks up changes made by installers (winget, msi, etc.) including
+# Path, CUDA_PATH, CUDA_PATH_V*, and any other vars they set.
+function Refresh-Environment {
+    # Reload non-Path variables from Machine and User scopes
+    foreach ($level in @('Machine', 'User')) {
+        $vars = [System.Environment]::GetEnvironmentVariables($level)
+        foreach ($key in $vars.Keys) {
+            if ($key -eq 'Path') { continue }
+            Set-Item -Path "Env:$key" -Value $vars[$key] -ErrorAction SilentlyContinue
+        }
+    }
+    # Path needs special handling: concatenate Machine + User
     $machinePath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
     $userPath = [System.Environment]::GetEnvironmentVariable('Path', 'User')
     $env:Path = "$machinePath;$userPath"
@@ -39,7 +50,7 @@ if (-not $HasGit) {
     if ($HasWinget) {
         try {
             winget install Git.Git --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
-            Refresh-Path
+            Refresh-Environment
             $HasGit = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
         } catch { }
     }
@@ -79,7 +90,7 @@ if ($NeedNode) {
     Write-Host "Installing Node.js via winget..." -ForegroundColor Cyan
     try {
         winget install OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements
-        Refresh-Path
+        Refresh-Environment
     } catch {
         Write-Host "[ERROR] Could not install Node.js automatically." -ForegroundColor Red
         Write-Host "Please install Node.js >= 20 from https://nodejs.org/" -ForegroundColor Red
@@ -188,7 +199,7 @@ if (Test-Path $LlamaServerBin) {
         if ($HasWinget) {
             try {
                 winget install Kitware.CMake --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
-                Refresh-Path
+                Refresh-Environment
                 $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
             } catch { }
         }
@@ -248,27 +259,36 @@ if (Test-Path $LlamaServerBin) {
             $CmakeArgs = @()
             $NvccPath = $null
 
-            # 1. Check nvcc on PATH
-            $NvccCmd = Get-Command nvcc -ErrorAction SilentlyContinue
-            if ($NvccCmd) { $NvccPath = $NvccCmd.Source }
+            # Helper: find nvcc on PATH, in CUDA_PATH, or in standard toolkit dirs.
+            # When found via filesystem, also sets CUDA_PATH so MSBuild can find it.
+            function Find-Nvcc {
+                # 1. Check nvcc on PATH
+                $cmd = Get-Command nvcc -ErrorAction SilentlyContinue
+                if ($cmd) { return $cmd.Source }
 
-            # 2. Check CUDA_PATH env var and standard toolkit directories
-            if (-not $NvccPath) {
-                $CudaRoot = $env:CUDA_PATH
-                if ($CudaRoot -and (Test-Path (Join-Path $CudaRoot 'bin\nvcc.exe'))) {
-                    $NvccPath = Join-Path $CudaRoot 'bin\nvcc.exe'
-                    $env:PATH = (Join-Path $CudaRoot 'bin') + ';' + $env:PATH
-                } else {
-                    $ToolkitBase = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA'
-                    if (Test-Path $ToolkitBase) {
-                        $Latest = Get-ChildItem -Directory $ToolkitBase | Sort-Object Name | Select-Object -Last 1
-                        if ($Latest -and (Test-Path (Join-Path $Latest.FullName 'bin\nvcc.exe'))) {
-                            $NvccPath = Join-Path $Latest.FullName 'bin\nvcc.exe'
-                            $env:PATH = (Join-Path $Latest.FullName 'bin') + ';' + $env:PATH
-                        }
+                # 2. Check CUDA_PATH env var
+                $cudaRoot = $env:CUDA_PATH
+                if ($cudaRoot -and (Test-Path (Join-Path $cudaRoot 'bin\nvcc.exe'))) {
+                    $env:PATH = (Join-Path $cudaRoot 'bin') + ';' + $env:PATH
+                    return (Join-Path $cudaRoot 'bin\nvcc.exe')
+                }
+
+                # 3. Scan standard toolkit directory
+                $toolkitBase = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA'
+                if (Test-Path $toolkitBase) {
+                    $latest = Get-ChildItem -Directory $toolkitBase | Sort-Object Name | Select-Object -Last 1
+                    if ($latest -and (Test-Path (Join-Path $latest.FullName 'bin\nvcc.exe'))) {
+                        # Set CUDA_PATH so MSBuild .targets can find the toolkit
+                        $env:CUDA_PATH = $latest.FullName
+                        $env:PATH = (Join-Path $latest.FullName 'bin') + ';' + $env:PATH
+                        return (Join-Path $latest.FullName 'bin\nvcc.exe')
                     }
                 }
+
+                return $null
             }
+
+            $NvccPath = Find-Nvcc
 
             # 3. GPU driver present but no toolkit -- auto-install via winget
             if (-not $NvccPath) {
@@ -279,21 +299,8 @@ if (Test-Path $LlamaServerBin) {
                     if ($HasWinget) {
                         Write-Host "   Installing CUDA Toolkit via winget (this may take several minutes)..." -ForegroundColor Cyan
                         winget install --id=Nvidia.CUDA -e --accept-package-agreements --accept-source-agreements
-                        Refresh-Path
-                        # Re-check after install: PATH first, then standard dirs
-                        $NvccCmd = Get-Command nvcc -ErrorAction SilentlyContinue
-                        if ($NvccCmd) {
-                            $NvccPath = $NvccCmd.Source
-                        } else {
-                            $ToolkitBase = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA'
-                            if (Test-Path $ToolkitBase) {
-                                $Latest = Get-ChildItem -Directory $ToolkitBase | Sort-Object Name | Select-Object -Last 1
-                                if ($Latest -and (Test-Path (Join-Path $Latest.FullName 'bin\nvcc.exe'))) {
-                                    $NvccPath = Join-Path $Latest.FullName 'bin\nvcc.exe'
-                                    $env:PATH = (Join-Path $Latest.FullName 'bin') + ';' + $env:PATH
-                                }
-                            }
-                        }
+                        Refresh-Environment
+                        $NvccPath = Find-Nvcc
                         if ($NvccPath) {
                             Write-Host "   [OK] CUDA Toolkit installed (nvcc: $NvccPath)" -ForegroundColor Green
                         } else {
@@ -316,6 +323,9 @@ if (Test-Path $LlamaServerBin) {
                     Write-Host "   Building CPU-only (no NVIDIA GPU detected)..." -ForegroundColor Gray
                 }
                 # If GPU present but no nvcc, warnings were already printed above
+                # Explicitly disable CUDA to prevent cmake from auto-detecting
+                # a partially-configured toolkit and failing
+                $CmakeArgs += '-DGGML_CUDA=OFF'
             }
 
             Write-Host "   Running cmake configure..." -ForegroundColor Gray

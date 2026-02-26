@@ -166,6 +166,101 @@ Write-Host "   Running ordered dependency installation..." -ForegroundColor Cyan
 python -c "from roland_ui_demo.installer import run_install; exit(run_install())"
 
 # ============================================
+# Build llama.cpp binaries for GGUF inference + export
+# ============================================
+# Builds at ~/.unsloth/llama.cpp/ (persistent across pip upgrades).
+# We build:
+#   - llama-server:   for GGUF model inference
+#   - llama-quantize: for GGUF export quantization
+$LlamaCppDir = Join-Path $env:USERPROFILE ".unsloth\llama.cpp"
+$LlamaServerBin = Join-Path $LlamaCppDir "build\bin\Release\llama-server.exe"
+
+if (Test-Path $LlamaServerBin) {
+    Write-Host ""
+    Write-Host "[OK] llama-server already exists at $LlamaServerBin" -ForegroundColor Green
+} else {
+    $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
+    $HasGitNow = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
+
+    if (-not $HasCmake) {
+        Write-Host ""
+        Write-Host "[SKIP] cmake not found -- skipping llama-server build (GGUF inference unavailable)" -ForegroundColor Yellow
+        Write-Host "       Install CMake and re-run to enable GGUF inference." -ForegroundColor Yellow
+    } elseif (-not $HasGitNow) {
+        Write-Host ""
+        Write-Host "[SKIP] git not found -- skipping llama-server build" -ForegroundColor Yellow
+    } else {
+        Write-Host ""
+        Write-Host "Building llama-server for GGUF inference..." -ForegroundColor Cyan
+
+        $UnslothDir = Join-Path $env:USERPROFILE ".unsloth"
+        if (-not (Test-Path $UnslothDir)) { New-Item -ItemType Directory -Path $UnslothDir -Force | Out-Null }
+
+        $BuildOk = $true
+
+        if (Test-Path (Join-Path $LlamaCppDir ".git")) {
+            Write-Host "   llama.cpp repo already cloned, pulling latest..." -ForegroundColor Gray
+            try { git -C $LlamaCppDir pull 2>&1 | Out-Null } catch { }
+        } else {
+            if (Test-Path $LlamaCppDir) { Remove-Item -Recurse -Force $LlamaCppDir }
+            try {
+                git clone --depth 1 https://github.com/ggml-org/llama.cpp.git $LlamaCppDir 2>&1 | Out-Null
+            } catch {
+                $BuildOk = $false
+            }
+        }
+
+        if ($BuildOk) {
+            # Detect CUDA on Windows
+            $CmakeArgs = @()
+            $NvccPath = Get-Command nvcc -ErrorAction SilentlyContinue
+            if ($NvccPath) {
+                Write-Host "   Building with CUDA support (nvcc: $($NvccPath.Source))..." -ForegroundColor Gray
+                $CmakeArgs += '-DGGML_CUDA=ON'
+            } else {
+                Write-Host "   Building CPU-only (no CUDA detected)..." -ForegroundColor Gray
+            }
+
+            $BuildDir = Join-Path $LlamaCppDir "build"
+            try {
+                $cmakeConfigArgs = @('-S', $LlamaCppDir, '-B', $BuildDir) + $CmakeArgs
+                cmake @cmakeConfigArgs 2>&1 | Out-Null
+            } catch {
+                $BuildOk = $false
+            }
+        }
+
+        $NumCpu = [Environment]::ProcessorCount
+        if ($NumCpu -lt 1) { $NumCpu = 4 }
+
+        if ($BuildOk) {
+            try {
+                cmake --build $BuildDir --config Release --target llama-server -j $NumCpu 2>&1 | Out-Null
+            } catch {
+                $BuildOk = $false
+            }
+        }
+
+        # Also build llama-quantize (needed by unsloth-zoo GGUF export pipeline)
+        if ($BuildOk) {
+            try {
+                cmake --build $BuildDir --config Release --target llama-quantize -j $NumCpu 2>&1 | Out-Null
+            } catch { }
+        }
+
+        if ($BuildOk -and (Test-Path $LlamaServerBin)) {
+            Write-Host "[OK] llama-server built at $LlamaServerBin" -ForegroundColor Green
+            $QuantizeBin = Join-Path $BuildDir "bin\Release\llama-quantize.exe"
+            if (Test-Path $QuantizeBin) {
+                Write-Host "[OK] llama-quantize available for GGUF export" -ForegroundColor Green
+            }
+        } else {
+            Write-Host "[SKIP] llama-server build failed -- GGUF inference unavailable, but everything else works" -ForegroundColor Yellow
+        }
+    }
+}
+
+# ============================================
 # Done
 # ============================================
 Write-Host ""

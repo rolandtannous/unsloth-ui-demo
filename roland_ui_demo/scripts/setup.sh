@@ -49,62 +49,63 @@ if [[ "$keynames" == *$'\nCOLAB_'* ]]; then
 fi
 
 # ══════════════════════════════════════════════
-# Step 1 & 2: Node + Frontend (skip if pip-installed)
+# Step 1: Node.js / npm (always — needed regardless of install method)
+# ══════════════════════════════════════════════
+NEED_NODE=true
+
+if command -v node &>/dev/null && command -v npm &>/dev/null; then
+    NODE_MAJOR=$(node -v | sed 's/v//' | cut -d. -f1)
+    NPM_MAJOR=$(npm -v | cut -d. -f1)
+
+    if [ "$NODE_MAJOR" -ge 20 ] && [ "$NPM_MAJOR" -ge 11 ]; then
+        echo "✅ Node $(node -v) and npm $(npm -v) already meet requirements."
+        NEED_NODE=false
+    elif [ "$IS_COLAB" = true ]; then
+        echo "✅ Node $(node -v) and npm $(npm -v) detected in Colab."
+        if [ "$NPM_MAJOR" -lt 11 ]; then
+            echo "   Upgrading npm to latest..."
+            npm install -g npm@latest > /dev/null 2>&1
+        fi
+        NEED_NODE=false
+    else
+        echo "⚠️  Node $(node -v) / npm $(npm -v) too old. Installing via nvm..."
+    fi
+else
+    echo "⚠️  Node/npm not found. Installing via nvm..."
+fi
+
+if [ "$NEED_NODE" = true ]; then
+    echo "Installing nvm..."
+    curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash > /dev/null 2>&1
+
+    export NVM_DIR="$HOME/.nvm"
+    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+
+    echo "Installing Node LTS..."
+    run_quiet "nvm install" nvm install --lts
+    nvm use --lts > /dev/null 2>&1
+
+    NODE_MAJOR=$(node -v | sed 's/v//' | cut -d. -f1)
+    NPM_MAJOR=$(npm -v | cut -d. -f1)
+
+    if [ "$NODE_MAJOR" -lt 20 ]; then
+        echo "❌ ERROR: Node version must be >= 20 (got $(node -v))"
+        exit 1
+    fi
+    if [ "$NPM_MAJOR" -lt 11 ]; then
+        echo "⚠️  npm version is $(npm -v), updating..."
+        run_quiet "npm update" npm install -g npm@latest
+    fi
+fi
+
+echo "✅ Node $(node -v) | npm $(npm -v)"
+
+# ══════════════════════════════════════════════
+# Step 2: Build React frontend (skip if pip-installed — already bundled)
 # ══════════════════════════════════════════════
 if [ "$IS_PIP_INSTALL" = true ]; then
-    echo "✅ Running from pip install — frontend already bundled, skipping Node/build"
+    echo "✅ Running from pip install — frontend already bundled, skipping build"
 else
-    # ── Node.js / npm ──
-    NEED_NODE=true
-
-    if command -v node &>/dev/null && command -v npm &>/dev/null; then
-        NODE_MAJOR=$(node -v | sed 's/v//' | cut -d. -f1)
-        NPM_MAJOR=$(npm -v | cut -d. -f1)
-
-        if [ "$NODE_MAJOR" -ge 20 ] && [ "$NPM_MAJOR" -ge 11 ]; then
-            echo "✅ Node $(node -v) and npm $(npm -v) already meet requirements."
-            NEED_NODE=false
-        elif [ "$IS_COLAB" = true ]; then
-            echo "✅ Node $(node -v) and npm $(npm -v) detected in Colab."
-            if [ "$NPM_MAJOR" -lt 11 ]; then
-                echo "   Upgrading npm to latest..."
-                npm install -g npm@latest > /dev/null 2>&1
-            fi
-            NEED_NODE=false
-        else
-            echo "⚠️  Node $(node -v) / npm $(npm -v) too old. Installing via nvm..."
-        fi
-    else
-        echo "⚠️  Node/npm not found. Installing via nvm..."
-    fi
-
-    if [ "$NEED_NODE" = true ]; then
-        echo "Installing nvm..."
-        curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash > /dev/null 2>&1
-
-        export NVM_DIR="$HOME/.nvm"
-        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-
-        echo "Installing Node LTS..."
-        run_quiet "nvm install" nvm install --lts
-        nvm use --lts > /dev/null 2>&1
-
-        NODE_MAJOR=$(node -v | sed 's/v//' | cut -d. -f1)
-        NPM_MAJOR=$(npm -v | cut -d. -f1)
-
-        if [ "$NODE_MAJOR" -lt 20 ]; then
-            echo "❌ ERROR: Node version must be >= 20 (got $(node -v))"
-            exit 1
-        fi
-        if [ "$NPM_MAJOR" -lt 11 ]; then
-            echo "⚠️  npm version is $(npm -v), updating..."
-            run_quiet "npm update" npm install -g npm@latest
-        fi
-    fi
-
-    echo "✅ Node $(node -v) | npm $(npm -v)"
-
-    # ── Build React frontend ──
     REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
     echo ""
     echo "Building frontend..."

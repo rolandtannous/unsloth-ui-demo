@@ -3,8 +3,9 @@
 .SYNOPSIS
     Full environment setup for Unsloth Studio on Windows (bundled version).
 .DESCRIPTION
-    When running from pip install: skips Node/frontend (already bundled),
-    only does Python deps. When running from git repo: full setup.
+    Always installs Node.js if needed. When running from pip install:
+    skips frontend build (already bundled). When running from git repo:
+    full setup including frontend build.
 .NOTES
     Usage: powershell -ExecutionPolicy Bypass -File setup.ps1
 #>
@@ -22,47 +23,49 @@ Write-Host "|       Unsloth Studio Setup (Windows)         |" -ForegroundColor G
 Write-Host "+==============================================+" -ForegroundColor Green
 
 # ============================================
-# Step 1 & 2: Node + Frontend (skip if pip-installed)
+# Step 1: Node.js / npm (always — needed regardless of install method)
+# ============================================
+$NeedNode = $true
+try {
+    $NodeVersion = (node -v 2>$null)
+    $NpmVersion = (npm -v 2>$null)
+    if ($NodeVersion -and $NpmVersion) {
+        $NodeMajor = [int]($NodeVersion -replace 'v','').Split('.')[0]
+        $NpmMajor = [int]$NpmVersion.Split('.')[0]
+
+        if ($NodeMajor -ge 20 -and $NpmMajor -ge 11) {
+            Write-Host "[OK] Node $NodeVersion and npm $NpmVersion already meet requirements." -ForegroundColor Green
+            $NeedNode = $false
+        } else {
+            Write-Host "[WARN] Node $NodeVersion / npm $NpmVersion too old." -ForegroundColor Yellow
+        }
+    }
+} catch {
+    Write-Host "[WARN] Node/npm not found." -ForegroundColor Yellow
+}
+
+if ($NeedNode) {
+    Write-Host "Installing Node.js via winget..." -ForegroundColor Cyan
+    try {
+        winget install OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+    } catch {
+        Write-Host "[ERROR] Could not install Node.js automatically." -ForegroundColor Red
+        Write-Host "Please install Node.js >= 20 from https://nodejs.org/" -ForegroundColor Red
+        exit 1
+    }
+}
+
+Write-Host "[OK] Node $(node -v) | npm $(npm -v)" -ForegroundColor Green
+
+# ============================================
+# Step 2: Build React frontend (skip if pip-installed — already bundled)
 # ============================================
 if ($IsPipInstall) {
-    Write-Host "[OK] Running from pip install - frontend already bundled, skipping Node/build" -ForegroundColor Green
+    Write-Host "[OK] Running from pip install - frontend already bundled, skipping build" -ForegroundColor Green
 } else {
     $RepoRoot = (Resolve-Path (Join-Path $ScriptDir "..\..")).Path
 
-    $NeedNode = $true
-    try {
-        $NodeVersion = (node -v 2>$null)
-        $NpmVersion = (npm -v 2>$null)
-        if ($NodeVersion -and $NpmVersion) {
-            $NodeMajor = [int]($NodeVersion -replace 'v','').Split('.')[0]
-            $NpmMajor = [int]$NpmVersion.Split('.')[0]
-
-            if ($NodeMajor -ge 20 -and $NpmMajor -ge 11) {
-                Write-Host "[OK] Node $NodeVersion and npm $NpmVersion already meet requirements." -ForegroundColor Green
-                $NeedNode = $false
-            } else {
-                Write-Host "[WARN] Node $NodeVersion / npm $NpmVersion too old." -ForegroundColor Yellow
-            }
-        }
-    } catch {
-        Write-Host "[WARN] Node/npm not found." -ForegroundColor Yellow
-    }
-
-    if ($NeedNode) {
-        Write-Host "Installing Node.js via winget..." -ForegroundColor Cyan
-        try {
-            winget install OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements
-            $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
-        } catch {
-            Write-Host "[ERROR] Could not install Node.js automatically." -ForegroundColor Red
-            Write-Host "Please install Node.js >= 20 from https://nodejs.org/" -ForegroundColor Red
-            exit 1
-        }
-    }
-
-    Write-Host "[OK] Node $(node -v) | npm $(npm -v)" -ForegroundColor Green
-
-    # Build React frontend
     Write-Host ""
     Write-Host "Building frontend..." -ForegroundColor Cyan
     Push-Location (Join-Path $RepoRoot "frontend")

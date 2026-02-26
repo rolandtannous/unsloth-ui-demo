@@ -295,6 +295,14 @@ if (Test-Path $LlamaServerBin) {
                 if ($nvcc) {
                     $toolkitRoot = Split-Path (Split-Path $nvcc -Parent) -Parent
                     $env:CUDA_PATH = $toolkitRoot
+                    # Also persist via setx so MSBuild and future sessions see it.
+                    # The winget Nvidia.CUDA package often fails to set this.
+                    $existingSys = [System.Environment]::GetEnvironmentVariable('CUDA_PATH', 'Machine')
+                    $existingUsr = [System.Environment]::GetEnvironmentVariable('CUDA_PATH', 'User')
+                    if (-not $existingSys -and -not $existingUsr) {
+                        Write-Host "   Setting CUDA_PATH=$toolkitRoot (was missing from environment)" -ForegroundColor Gray
+                        setx CUDA_PATH $toolkitRoot *> $null
+                    }
                 }
 
                 return $nvcc
@@ -326,20 +334,20 @@ if (Test-Path $LlamaServerBin) {
                 }
             }
 
+            # -- Run cmake configure (with CUDA fallback to CPU-only) --
+            $UseCuda = $false
             if ($NvccPath) {
                 Write-Host "   Building with CUDA support (nvcc: $NvccPath)..." -ForegroundColor Gray
                 Write-Host "   CUDA_PATH=$env:CUDA_PATH" -ForegroundColor Gray
                 $CmakeArgs += '-DGGML_CUDA=ON'
                 $CmakeArgs += "-DCUDAToolkit_ROOT=$env:CUDA_PATH"
                 $CmakeArgs += "-DCMAKE_CUDA_COMPILER=$NvccPath"
+                $UseCuda = $true
             } else {
                 $HasGpu = $null -ne (Get-Command nvidia-smi -ErrorAction SilentlyContinue)
                 if (-not $HasGpu) {
                     Write-Host "   Building CPU-only (no NVIDIA GPU detected)..." -ForegroundColor Gray
                 }
-                # If GPU present but no nvcc, warnings were already printed above
-                # Explicitly disable CUDA to prevent cmake from auto-detecting
-                # a partially-configured toolkit and failing
                 $CmakeArgs += '-DGGML_CUDA=OFF'
             }
 
@@ -347,10 +355,23 @@ if (Test-Path $LlamaServerBin) {
             $tmpLog = [System.IO.Path]::GetTempFileName()
             $cmakeConfigArgs = @('-S', $LlamaCppDir, '-B', $BuildDir) + $CmakeArgs
             cmake @cmakeConfigArgs *> $tmpLog
-            if ($LASTEXITCODE -ne 0) {
+            $cmakeExit = $LASTEXITCODE
+
+            # If CUDA build failed, retry CPU-only automatically
+            if ($cmakeExit -ne 0 -and $UseCuda) {
+                Write-Host "   [WARN] CUDA cmake configure failed -- retrying CPU-only build..." -ForegroundColor Yellow
+                Write-Host "   (To fix CUDA later: ensure CUDA_PATH is set and re-run setup)" -ForegroundColor Yellow
+                # Clean build dir and retry without CUDA
+                if (Test-Path $BuildDir) { Remove-Item -Recurse -Force $BuildDir }
+                $cpuArgs = @('-S', $LlamaCppDir, '-B', $BuildDir, '-DGGML_CUDA=OFF')
+                cmake @cpuArgs *> $tmpLog
+                $cmakeExit = $LASTEXITCODE
+            }
+
+            if ($cmakeExit -ne 0) {
                 $BuildOk = $false
                 $FailedStep = "cmake configure"
-                Write-Host "   [FAILED] cmake configure failed (exit code $LASTEXITCODE):" -ForegroundColor Red
+                Write-Host "   [FAILED] cmake configure failed (exit code $cmakeExit):" -ForegroundColor Red
                 Get-Content $tmpLog | ForEach-Object { Write-Host "   $_" -ForegroundColor Red }
             }
             Remove-Item -Force $tmpLog -ErrorAction SilentlyContinue

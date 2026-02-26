@@ -46,7 +46,7 @@ torch-stoi
 evaluate
 timm
 transformers-cfg
-open_spiel
+open_spiel; sys_platform != 'win32'  # No pre-built wheel for Windows; requires manual C++ build
 addict
 easydict
 einops

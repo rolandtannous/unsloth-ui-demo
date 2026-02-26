@@ -259,33 +259,45 @@ if (Test-Path $LlamaServerBin) {
             $CmakeArgs = @()
             $NvccPath = $null
 
-            # Helper: find nvcc on PATH, in CUDA_PATH, or in standard toolkit dirs.
-            # When found via filesystem, also sets CUDA_PATH so MSBuild can find it.
+            # Helper: find nvcc and ALWAYS set CUDA_PATH for MSBuild.
+            # MSBuild's CUDA .targets reads CudaToolkitDir from $env:CUDA_PATH.
+            # Without it, cmake configure fails even though cmake itself finds the toolkit.
             function Find-Nvcc {
+                $nvcc = $null
+
                 # 1. Check nvcc on PATH
                 $cmd = Get-Command nvcc -ErrorAction SilentlyContinue
-                if ($cmd) { return $cmd.Source }
+                if ($cmd) { $nvcc = $cmd.Source }
 
                 # 2. Check CUDA_PATH env var
-                $cudaRoot = $env:CUDA_PATH
-                if ($cudaRoot -and (Test-Path (Join-Path $cudaRoot 'bin\nvcc.exe'))) {
-                    $env:PATH = (Join-Path $cudaRoot 'bin') + ';' + $env:PATH
-                    return (Join-Path $cudaRoot 'bin\nvcc.exe')
-                }
-
-                # 3. Scan standard toolkit directory
-                $toolkitBase = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA'
-                if (Test-Path $toolkitBase) {
-                    $latest = Get-ChildItem -Directory $toolkitBase | Sort-Object Name | Select-Object -Last 1
-                    if ($latest -and (Test-Path (Join-Path $latest.FullName 'bin\nvcc.exe'))) {
-                        # Set CUDA_PATH so MSBuild .targets can find the toolkit
-                        $env:CUDA_PATH = $latest.FullName
-                        $env:PATH = (Join-Path $latest.FullName 'bin') + ';' + $env:PATH
-                        return (Join-Path $latest.FullName 'bin\nvcc.exe')
+                if (-not $nvcc) {
+                    $cudaRoot = $env:CUDA_PATH
+                    if ($cudaRoot -and (Test-Path (Join-Path $cudaRoot 'bin\nvcc.exe'))) {
+                        $nvcc = Join-Path $cudaRoot 'bin\nvcc.exe'
+                        $env:PATH = (Join-Path $cudaRoot 'bin') + ';' + $env:PATH
                     }
                 }
 
-                return $null
+                # 3. Scan standard toolkit directory
+                if (-not $nvcc) {
+                    $toolkitBase = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA'
+                    if (Test-Path $toolkitBase) {
+                        $latest = Get-ChildItem -Directory $toolkitBase | Sort-Object Name | Select-Object -Last 1
+                        if ($latest -and (Test-Path (Join-Path $latest.FullName 'bin\nvcc.exe'))) {
+                            $nvcc = Join-Path $latest.FullName 'bin\nvcc.exe'
+                            $env:PATH = (Join-Path $latest.FullName 'bin') + ';' + $env:PATH
+                        }
+                    }
+                }
+
+                # ALWAYS derive and set CUDA_PATH from nvcc location.
+                # nvcc is at <toolkit>/bin/nvcc.exe, so toolkit root = grandparent.
+                if ($nvcc) {
+                    $toolkitRoot = Split-Path (Split-Path $nvcc -Parent) -Parent
+                    $env:CUDA_PATH = $toolkitRoot
+                }
+
+                return $nvcc
             }
 
             $NvccPath = Find-Nvcc
@@ -316,7 +328,10 @@ if (Test-Path $LlamaServerBin) {
 
             if ($NvccPath) {
                 Write-Host "   Building with CUDA support (nvcc: $NvccPath)..." -ForegroundColor Gray
+                Write-Host "   CUDA_PATH=$env:CUDA_PATH" -ForegroundColor Gray
                 $CmakeArgs += '-DGGML_CUDA=ON'
+                $CmakeArgs += "-DCUDAToolkit_ROOT=$env:CUDA_PATH"
+                $CmakeArgs += "-DCMAKE_CUDA_COMPILER=$NvccPath"
             } else {
                 $HasGpu = $null -ne (Get-Command nvidia-smi -ErrorAction SilentlyContinue)
                 if (-not $HasGpu) {

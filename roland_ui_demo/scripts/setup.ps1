@@ -225,12 +225,46 @@ if (Test-Path $LlamaServerBin) {
         # -- Step B: Detect CUDA and run cmake configure --
         if ($BuildOk) {
             $CmakeArgs = @()
-            $NvccPath = Get-Command nvcc -ErrorAction SilentlyContinue
+            $NvccPath = $null
+
+            # 1. Check nvcc on PATH
+            $NvccCmd = Get-Command nvcc -ErrorAction SilentlyContinue
+            if ($NvccCmd) {
+                $NvccPath = $NvccCmd.Source
+            }
+
+            # 2. Search common CUDA Toolkit install locations on Windows
+            if (-not $NvccPath) {
+                $CudaRoot = $env:CUDA_PATH
+                if ($CudaRoot -and (Test-Path (Join-Path $CudaRoot 'bin\nvcc.exe'))) {
+                    $NvccPath = Join-Path $CudaRoot 'bin\nvcc.exe'
+                    $env:PATH = (Join-Path $CudaRoot 'bin') + ';' + $env:PATH
+                } else {
+                    # Scan C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v*
+                    $ToolkitBase = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA'
+                    if (Test-Path $ToolkitBase) {
+                        $Latest = Get-ChildItem -Directory $ToolkitBase | Sort-Object Name | Select-Object -Last 1
+                        if ($Latest -and (Test-Path (Join-Path $Latest.FullName 'bin\nvcc.exe'))) {
+                            $NvccPath = Join-Path $Latest.FullName 'bin\nvcc.exe'
+                            $env:PATH = (Join-Path $Latest.FullName 'bin') + ';' + $env:PATH
+                        }
+                    }
+                }
+            }
+
             if ($NvccPath) {
-                Write-Host "   Building with CUDA support (nvcc: $($NvccPath.Source))..." -ForegroundColor Gray
+                Write-Host "   Building with CUDA support (nvcc: $NvccPath)..." -ForegroundColor Gray
                 $CmakeArgs += '-DGGML_CUDA=ON'
             } else {
-                Write-Host "   Building CPU-only (no CUDA detected)..." -ForegroundColor Gray
+                # 3. Check if GPU driver is present but toolkit is missing
+                $HasNvidiaSmi = $null -ne (Get-Command nvidia-smi -ErrorAction SilentlyContinue)
+                if ($HasNvidiaSmi) {
+                    Write-Host "   CUDA driver detected but nvcc not found -- building CPU-only" -ForegroundColor Yellow
+                    Write-Host "   To enable GPU: install CUDA Toolkit from https://developer.nvidia.com/cuda-downloads" -ForegroundColor Yellow
+                    Write-Host "   Then re-run setup to rebuild with CUDA support." -ForegroundColor Yellow
+                } else {
+                    Write-Host "   Building CPU-only (no CUDA detected)..." -ForegroundColor Gray
+                }
             }
 
             Write-Host "   Running cmake configure..." -ForegroundColor Gray

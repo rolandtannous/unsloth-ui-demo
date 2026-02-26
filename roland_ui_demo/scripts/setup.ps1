@@ -259,58 +259,36 @@ if (Test-Path $LlamaServerBin) {
             $CmakeArgs = @()
             $NvccPath = $null
 
-            # Helper: find nvcc and ALWAYS set CUDA_PATH for MSBuild.
-            # MSBuild's CUDA .targets reads CudaToolkitDir from $env:CUDA_PATH.
-            # Without it, cmake configure fails even though cmake itself finds the toolkit.
+            # Helper: find nvcc on PATH, CUDA_PATH, or standard toolkit dirs.
+            # Returns the path to nvcc.exe, or $null if not found.
             function Find-Nvcc {
-                $nvcc = $null
-
                 # 1. Check nvcc on PATH
                 $cmd = Get-Command nvcc -ErrorAction SilentlyContinue
-                if ($cmd) { $nvcc = $cmd.Source }
+                if ($cmd) { return $cmd.Source }
 
                 # 2. Check CUDA_PATH env var
-                if (-not $nvcc) {
-                    $cudaRoot = $env:CUDA_PATH
-                    if ($cudaRoot -and (Test-Path (Join-Path $cudaRoot 'bin\nvcc.exe'))) {
-                        $nvcc = Join-Path $cudaRoot 'bin\nvcc.exe'
-                        $env:PATH = (Join-Path $cudaRoot 'bin') + ';' + $env:PATH
-                    }
+                $cudaRoot = [Environment]::GetEnvironmentVariable('CUDA_PATH', 'Process')
+                if (-not $cudaRoot) { $cudaRoot = [Environment]::GetEnvironmentVariable('CUDA_PATH', 'Machine') }
+                if (-not $cudaRoot) { $cudaRoot = [Environment]::GetEnvironmentVariable('CUDA_PATH', 'User') }
+                if ($cudaRoot -and (Test-Path (Join-Path $cudaRoot 'bin\nvcc.exe'))) {
+                    return (Join-Path $cudaRoot 'bin\nvcc.exe')
                 }
 
                 # 3. Scan standard toolkit directory
-                if (-not $nvcc) {
-                    $toolkitBase = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA'
-                    if (Test-Path $toolkitBase) {
-                        $latest = Get-ChildItem -Directory $toolkitBase | Sort-Object Name | Select-Object -Last 1
-                        if ($latest -and (Test-Path (Join-Path $latest.FullName 'bin\nvcc.exe'))) {
-                            $nvcc = Join-Path $latest.FullName 'bin\nvcc.exe'
-                            $env:PATH = (Join-Path $latest.FullName 'bin') + ';' + $env:PATH
-                        }
+                $toolkitBase = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA'
+                if (Test-Path $toolkitBase) {
+                    $latest = Get-ChildItem -Directory $toolkitBase | Sort-Object Name | Select-Object -Last 1
+                    if ($latest -and (Test-Path (Join-Path $latest.FullName 'bin\nvcc.exe'))) {
+                        return (Join-Path $latest.FullName 'bin\nvcc.exe')
                     }
                 }
 
-                # ALWAYS derive and set CUDA_PATH from nvcc location.
-                # nvcc is at <toolkit>/bin/nvcc.exe, so toolkit root = grandparent.
-                if ($nvcc) {
-                    $toolkitRoot = Split-Path (Split-Path $nvcc -Parent) -Parent
-                    $env:CUDA_PATH = $toolkitRoot
-                    # Also persist via setx so MSBuild and future sessions see it.
-                    # The winget Nvidia.CUDA package often fails to set this.
-                    $existingSys = [System.Environment]::GetEnvironmentVariable('CUDA_PATH', 'Machine')
-                    $existingUsr = [System.Environment]::GetEnvironmentVariable('CUDA_PATH', 'User')
-                    if (-not $existingSys -and -not $existingUsr) {
-                        Write-Host "   Setting CUDA_PATH=$toolkitRoot (was missing from environment)" -ForegroundColor Gray
-                        setx CUDA_PATH $toolkitRoot *> $null
-                    }
-                }
-
-                return $nvcc
+                return $null
             }
 
             $NvccPath = Find-Nvcc
 
-            # 3. GPU driver present but no toolkit -- auto-install via winget
+            # GPU driver present but no toolkit -- auto-install via winget
             if (-not $NvccPath) {
                 $HasNvidiaSmi = $null -ne (Get-Command nvidia-smi -ErrorAction SilentlyContinue)
                 if ($HasNvidiaSmi) {
@@ -334,13 +312,36 @@ if (Test-Path $LlamaServerBin) {
                 }
             }
 
+            # -- Set CUDA_PATH at Process + User level so cmake AND MSBuild can find it --
+            # MSBuild's CUDA .targets reads CudaToolkitDir from CUDA_PATH env var.
+            # [Environment]::SetEnvironmentVariable with 'Process' scope ensures child
+            # processes (cmake -> msbuild) inherit it reliably.
+            # 'User' scope persists it to the registry for future sessions.
+            if ($NvccPath) {
+                $CudaToolkitRoot = Split-Path (Split-Path $NvccPath -Parent) -Parent
+                [Environment]::SetEnvironmentVariable('CUDA_PATH', $CudaToolkitRoot, 'Process')
+                # Also persist to User registry if not already set at any level
+                $existingSys = [Environment]::GetEnvironmentVariable('CUDA_PATH', 'Machine')
+                $existingUsr = [Environment]::GetEnvironmentVariable('CUDA_PATH', 'User')
+                if (-not $existingSys -and -not $existingUsr) {
+                    [Environment]::SetEnvironmentVariable('CUDA_PATH', $CudaToolkitRoot, 'User')
+                    Write-Host "   Persisted CUDA_PATH=$CudaToolkitRoot to user environment" -ForegroundColor Gray
+                }
+                # Ensure nvcc's bin dir is on PATH for this process
+                $nvccBinDir = Split-Path $NvccPath -Parent
+                if ($env:PATH -notlike "*$nvccBinDir*") {
+                    [Environment]::SetEnvironmentVariable('PATH', "$nvccBinDir;$env:PATH", 'Process')
+                }
+            }
+
             # -- Run cmake configure (with CUDA fallback to CPU-only) --
             $UseCuda = $false
             if ($NvccPath) {
+                $CudaToolkitRoot = [Environment]::GetEnvironmentVariable('CUDA_PATH', 'Process')
                 Write-Host "   Building with CUDA support (nvcc: $NvccPath)..." -ForegroundColor Gray
-                Write-Host "   CUDA_PATH=$env:CUDA_PATH" -ForegroundColor Gray
+                Write-Host "   CUDA_PATH=$CudaToolkitRoot" -ForegroundColor Gray
                 $CmakeArgs += '-DGGML_CUDA=ON'
-                $CmakeArgs += "-DCUDAToolkit_ROOT=$env:CUDA_PATH"
+                $CmakeArgs += "-DCUDAToolkit_ROOT=$CudaToolkitRoot"
                 $CmakeArgs += "-DCMAKE_CUDA_COMPILER=$NvccPath"
                 $UseCuda = $true
             } else {

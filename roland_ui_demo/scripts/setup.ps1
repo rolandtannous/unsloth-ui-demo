@@ -138,23 +138,42 @@ python -c "from roland_ui_demo.installer import run_install; exit(run_install())
 # Step 4: Build open_spiel from source (Windows only — no pre-built wheel)
 # ============================================
 Write-Host ""
-Write-Host "Attempting to build open_spiel from source..." -ForegroundColor Cyan
-Write-Host "  (This requires Visual Studio with C++ Desktop Development," -ForegroundColor Gray
-Write-Host "   MSVC v143, and Windows 11 SDK)" -ForegroundColor Gray
+Write-Host "Building open_spiel from source (no pre-built wheel for Windows)..." -ForegroundColor Cyan
 
 $OpenSpielOk = $false
 try {
-    # Check prerequisites: cmake and cl.exe (MSVC compiler)
+    # ── Check / install winget (needed for auto-installing prerequisites) ──
+    $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
+
+    # ── Check / install CMake ──
     $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
+    if (-not $HasCmake) {
+        if ($HasWinget) {
+            Write-Host "  CMake not found — installing via winget..." -ForegroundColor Yellow
+            winget install Kitware.CMake --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+            # Refresh PATH so cmake is visible
+            $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+            $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
+        }
+        if (-not $HasCmake) {
+            Write-Host "[SKIP] CMake not found and could not be installed automatically." -ForegroundColor Yellow
+            Write-Host "       Install CMake from https://cmake.org/download/ and re-run." -ForegroundColor Yellow
+            throw "missing cmake"
+        }
+        Write-Host "  [OK] CMake installed" -ForegroundColor Green
+    } else {
+        Write-Host "  [OK] CMake found: $(cmake --version | Select-Object -First 1)" -ForegroundColor Green
+    }
+
+    # ── Check / install MSVC (Visual Studio Build Tools with C++ workload) ──
     $HasMsvc = $null -ne (Get-Command cl -ErrorAction SilentlyContinue)
 
-    # Also check via vswhere if Visual Studio C++ tools are installed
+    # If cl.exe isn't on PATH, check if VS is installed and source its environment
     if (-not $HasMsvc) {
         $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
         if (Test-Path $vswhere) {
             $vsPath = & $vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
             if ($vsPath) {
-                # Source the VS developer environment
                 $vcvars = Join-Path $vsPath "VC\Auxiliary\Build\vcvars64.bat"
                 if (Test-Path $vcvars) {
                     Write-Host "  Sourcing Visual Studio environment..." -ForegroundColor Gray
@@ -163,26 +182,54 @@ try {
                             [System.Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], "Process")
                         }
                     }
-                    $HasMsvc = $true
+                    $HasMsvc = $null -ne (Get-Command cl -ErrorAction SilentlyContinue)
                 }
             }
         }
     }
 
-    if (-not $HasCmake) {
-        Write-Host "[SKIP] CMake not found. Install CMake to build open_spiel." -ForegroundColor Yellow
-        Write-Host "       https://cmake.org/download/" -ForegroundColor Yellow
-        throw "missing cmake"
-    }
-
+    # Still no MSVC — try installing VS Build Tools via winget
     if (-not $HasMsvc) {
-        Write-Host "[SKIP] MSVC compiler (cl.exe) not found." -ForegroundColor Yellow
-        Write-Host "       Install Visual Studio with 'Desktop Development with C++'," -ForegroundColor Yellow
-        Write-Host "       MSVC v143, and Windows 11 SDK." -ForegroundColor Yellow
-        throw "missing msvc"
+        if ($HasWinget) {
+            Write-Host "  MSVC compiler not found — installing Visual Studio Build Tools..." -ForegroundColor Yellow
+            Write-Host "  (This installs C++ build tools only, not the full IDE — ~2-4 GB)" -ForegroundColor Yellow
+            winget install Microsoft.VisualStudio.2022.BuildTools `
+                --accept-package-agreements --accept-source-agreements `
+                --override "--add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows11SDK.22621 --passive --wait" 2>&1 | Out-Null
+
+            # Refresh PATH and source the newly installed environment
+            $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+
+            # Find and source vcvars from the new installation
+            $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+            if (Test-Path $vswhere) {
+                $vsPath = & $vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
+                if ($vsPath) {
+                    $vcvars = Join-Path $vsPath "VC\Auxiliary\Build\vcvars64.bat"
+                    if (Test-Path $vcvars) {
+                        cmd /c "`"$vcvars`" >nul 2>&1 && set" | ForEach-Object {
+                            if ($_ -match "^([^=]+)=(.*)$") {
+                                [System.Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], "Process")
+                            }
+                        }
+                        $HasMsvc = $null -ne (Get-Command cl -ErrorAction SilentlyContinue)
+                    }
+                }
+            }
+        }
+
+        if (-not $HasMsvc) {
+            Write-Host "[SKIP] MSVC compiler (cl.exe) could not be installed automatically." -ForegroundColor Yellow
+            Write-Host "       Install Visual Studio Build Tools with 'Desktop Development with C++'," -ForegroundColor Yellow
+            Write-Host "       MSVC v143, and Windows 11 SDK, then re-run." -ForegroundColor Yellow
+            throw "missing msvc"
+        }
+        Write-Host "  [OK] Visual Studio Build Tools installed" -ForegroundColor Green
+    } else {
+        Write-Host "  [OK] MSVC compiler found" -ForegroundColor Green
     }
 
-    # Clone open_spiel into a temp directory
+    # ── Clone open_spiel into a temp directory ──
     $TempDir = Join-Path ([System.IO.Path]::GetTempPath()) "open_spiel_build_$(Get-Random)"
     New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
 
@@ -202,7 +249,7 @@ try {
     # Install Python dependencies
     pip install absl-py attrs numpy 2>&1 | Out-Null
 
-    # Build with CMake using MSVC flags
+    # ── Build with CMake using MSVC flags ──
     $BuildDir = "open_spiel\out\build\x64-Release"
     New-Item -ItemType Directory -Path $BuildDir -Force | Out-Null
     Push-Location $BuildDir
@@ -230,7 +277,8 @@ try {
 } catch {
     Write-Host ""
     Write-Host "[SKIP] open_spiel could not be built automatically." -ForegroundColor Yellow
-    Write-Host "       This is optional. To install manually later, see:" -ForegroundColor Yellow
+    Write-Host "       This is optional and won't affect core functionality." -ForegroundColor Yellow
+    Write-Host "       To install manually later, see:" -ForegroundColor Yellow
     Write-Host "       https://openspiel.readthedocs.io/en/latest/windows.html" -ForegroundColor Yellow
 
     # Clean up any pushed locations

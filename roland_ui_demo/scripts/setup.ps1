@@ -18,12 +18,37 @@ $PackageDir = Split-Path -Parent $ScriptDir
 $FrontendDir = Join-Path $ScriptDir "..\..\frontend"
 $IsPipInstall = -not (Test-Path $FrontendDir)
 
+# Helper: source a Visual Studio vcvars batch file and import env vars into PS session.
+# Uses a temp .bat file to avoid PS 5.1 parsing issues with && and 2>&1 inside strings.
+function Import-VCVars {
+    param([string]$VcVarsPath)
+    $tempBat = Join-Path $env:TEMP "unsloth_vcvars_env.bat"
+    try {
+        Set-Content -Path $tempBat -Value "@call `"$VcVarsPath`" >nul 2>&1`r`n@set" -Encoding ASCII
+        $envLines = cmd /c $tempBat
+        foreach ($line in $envLines) {
+            if ($line -match '^([^=]+)=(.*)$') {
+                [System.Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')
+            }
+        }
+    } finally {
+        Remove-Item $tempBat -ErrorAction SilentlyContinue
+    }
+}
+
+# Helper: refresh PATH from registry (picks up changes from winget installs)
+function Refresh-Path {
+    $machinePath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $userPath = [System.Environment]::GetEnvironmentVariable('Path', 'User')
+    $env:Path = "$machinePath;$userPath"
+}
+
 Write-Host "+==============================================+" -ForegroundColor Green
 Write-Host "|       Unsloth Studio Setup (Windows)         |" -ForegroundColor Green
 Write-Host "+==============================================+" -ForegroundColor Green
 
 # ============================================
-# Step 1: Node.js / npm (always — needed regardless of install method)
+# Step 1: Node.js / npm (always -- needed regardless of install method)
 # ============================================
 $NeedNode = $true
 try {
@@ -48,7 +73,7 @@ if ($NeedNode) {
     Write-Host "Installing Node.js via winget..." -ForegroundColor Cyan
     try {
         winget install OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements
-        $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+        Refresh-Path
     } catch {
         Write-Host "[ERROR] Could not install Node.js automatically." -ForegroundColor Red
         Write-Host "Please install Node.js >= 20 from https://nodejs.org/" -ForegroundColor Red
@@ -59,7 +84,7 @@ if ($NeedNode) {
 Write-Host "[OK] Node $(node -v) | npm $(npm -v)" -ForegroundColor Green
 
 # ============================================
-# Step 2: Build React frontend (skip if pip-installed — already bundled)
+# Step 2: Build React frontend (skip if pip-installed -- already bundled)
 # ============================================
 if ($IsPipInstall) {
     Write-Host "[OK] Running from pip install - frontend already bundled, skipping build" -ForegroundColor Green
@@ -91,7 +116,7 @@ $PythonCmd = $null
 foreach ($candidate in @("python3.12", "python3.11", "python3.10", "python3.9", "python3", "python")) {
     try {
         $ver = & $candidate --version 2>&1
-        if ($ver -match "Python 3\.(\d+)") {
+        if ($ver -match 'Python 3\.(\d+)') {
             $minor = [int]$Matches[1]
             if ($minor -le 12) {
                 $PythonCmd = $candidate
@@ -135,24 +160,23 @@ Write-Host "   Running ordered dependency installation..." -ForegroundColor Cyan
 python -c "from roland_ui_demo.installer import run_install; exit(run_install())"
 
 # ============================================
-# Step 4: Build open_spiel from source (Windows only — no pre-built wheel)
+# Step 4: Build open_spiel from source (Windows only -- no pre-built wheel)
 # ============================================
 Write-Host ""
 Write-Host "Building open_spiel from source (no pre-built wheel for Windows)..." -ForegroundColor Cyan
 
 $OpenSpielOk = $false
 try {
-    # ── Check / install winget (needed for auto-installing prerequisites) ──
+    # -- Check / install winget (needed for auto-installing prerequisites) --
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
 
-    # ── Check / install CMake ──
+    # -- Check / install CMake --
     $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
     if (-not $HasCmake) {
         if ($HasWinget) {
-            Write-Host "  CMake not found — installing via winget..." -ForegroundColor Yellow
+            Write-Host "  CMake not found -- installing via winget..." -ForegroundColor Yellow
             winget install Kitware.CMake --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
-            # Refresh PATH so cmake is visible
-            $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+            Refresh-Path
             $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
         }
         if (-not $HasCmake) {
@@ -165,10 +189,10 @@ try {
         Write-Host "  [OK] CMake found: $(cmake --version | Select-Object -First 1)" -ForegroundColor Green
     }
 
-    # ── Check / install MSVC (Visual Studio Build Tools with C++ workload) ──
+    # -- Check / install MSVC (Visual Studio Build Tools with C++ workload) --
     $HasMsvc = $null -ne (Get-Command cl -ErrorAction SilentlyContinue)
 
-    # If cl.exe isn't on PATH, check if VS is installed and source its environment
+    # If cl.exe is not on PATH, check if VS is installed and source its environment
     if (-not $HasMsvc) {
         $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
         if (Test-Path $vswhere) {
@@ -177,28 +201,23 @@ try {
                 $vcvars = Join-Path $vsPath "VC\Auxiliary\Build\vcvars64.bat"
                 if (Test-Path $vcvars) {
                     Write-Host "  Sourcing Visual Studio environment..." -ForegroundColor Gray
-                    cmd /c "`"$vcvars`" >nul 2>&1 && set" | ForEach-Object {
-                        if ($_ -match "^([^=]+)=(.*)$") {
-                            [System.Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], "Process")
-                        }
-                    }
+                    Import-VCVars -VcVarsPath $vcvars
                     $HasMsvc = $null -ne (Get-Command cl -ErrorAction SilentlyContinue)
                 }
             }
         }
     }
 
-    # Still no MSVC — try installing VS Build Tools via winget
+    # Still no MSVC -- try installing VS Build Tools via winget
     if (-not $HasMsvc) {
         if ($HasWinget) {
-            Write-Host "  MSVC compiler not found — installing Visual Studio Build Tools..." -ForegroundColor Yellow
-            Write-Host "  (This installs C++ build tools only, not the full IDE — ~2-4 GB)" -ForegroundColor Yellow
-            winget install Microsoft.VisualStudio.2022.BuildTools `
-                --accept-package-agreements --accept-source-agreements `
-                --override "--add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows11SDK.22621 --passive --wait" 2>&1 | Out-Null
+            Write-Host "  MSVC compiler not found -- installing Visual Studio Build Tools..." -ForegroundColor Yellow
+            Write-Host "  (C++ build tools only, not the full IDE, approx 2-4 GB)" -ForegroundColor Yellow
+            $vsOverride = "--add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows11SDK.22621 --passive --wait"
+            winget install Microsoft.VisualStudio.2022.BuildTools --accept-package-agreements --accept-source-agreements --override $vsOverride 2>&1 | Out-Null
 
             # Refresh PATH and source the newly installed environment
-            $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+            Refresh-Path
 
             # Find and source vcvars from the new installation
             $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -207,11 +226,7 @@ try {
                 if ($vsPath) {
                     $vcvars = Join-Path $vsPath "VC\Auxiliary\Build\vcvars64.bat"
                     if (Test-Path $vcvars) {
-                        cmd /c "`"$vcvars`" >nul 2>&1 && set" | ForEach-Object {
-                            if ($_ -match "^([^=]+)=(.*)$") {
-                                [System.Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], "Process")
-                            }
-                        }
+                        Import-VCVars -VcVarsPath $vcvars
                         $HasMsvc = $null -ne (Get-Command cl -ErrorAction SilentlyContinue)
                     }
                 }
@@ -229,7 +244,7 @@ try {
         Write-Host "  [OK] MSVC compiler found" -ForegroundColor Green
     }
 
-    # ── Clone open_spiel into a temp directory ──
+    # -- Clone open_spiel into a temp directory --
     $TempDir = Join-Path ([System.IO.Path]::GetTempPath()) "open_spiel_build_$(Get-Random)"
     New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
 
@@ -249,7 +264,7 @@ try {
     # Install Python dependencies
     pip install absl-py attrs numpy 2>&1 | Out-Null
 
-    # ── Build with CMake using MSVC flags ──
+    # -- Build with CMake using MSVC flags --
     $BuildDir = "open_spiel\out\build\x64-Release"
     New-Item -ItemType Directory -Path $BuildDir -Force | Out-Null
     Push-Location $BuildDir
@@ -277,7 +292,7 @@ try {
 } catch {
     Write-Host ""
     Write-Host "[SKIP] open_spiel could not be built automatically." -ForegroundColor Yellow
-    Write-Host "       This is optional and won't affect core functionality." -ForegroundColor Yellow
+    Write-Host "       This is optional and will not affect core functionality." -ForegroundColor Yellow
     Write-Host "       To install manually later, see:" -ForegroundColor Yellow
     Write-Host "       https://openspiel.readthedocs.io/en/latest/windows.html" -ForegroundColor Yellow
 

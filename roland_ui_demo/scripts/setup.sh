@@ -1,15 +1,24 @@
 #!/usr/bin/env bash
 #
-# Full environment setup for Unsloth Studio.
-# Installs Node (if needed), builds the React frontend, installs all Python
-# dependencies in the correct order, and registers the CLI entry point.
+# Unsloth Studio setup script (bundled version).
 #
-# Usage:
-#   ./setup.sh
+# When running from a pip-installed package, the frontend is already built
+# and bundled — this script only handles Python/venv setup and the ordered
+# dependency installation.
+#
+# When running from the git repo (./setup.sh at repo root), the full version
+# handles Node, frontend build, AND dependencies.
 #
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REQS_DIR="$SCRIPT_DIR/backend/requirements"
+
+# Detect if we're running from inside a pip-installed package
+# (site-packages/roland_ui_demo/scripts/) vs from the git repo root.
+PACKAGE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+IS_PIP_INSTALL=false
+if [ ! -d "$SCRIPT_DIR/../../frontend" ]; then
+    IS_PIP_INSTALL=true
+fi
 
 # ── Helper: run command quietly, show output only on failure ──
 run_quiet() {
@@ -40,73 +49,77 @@ if [[ "$keynames" == *$'\nCOLAB_'* ]]; then
 fi
 
 # ══════════════════════════════════════════════
-# Step 1: Node.js / npm
+# Step 1 & 2: Node + Frontend (skip if pip-installed)
 # ══════════════════════════════════════════════
-NEED_NODE=true
-
-if command -v node &>/dev/null && command -v npm &>/dev/null; then
-    NODE_MAJOR=$(node -v | sed 's/v//' | cut -d. -f1)
-    NPM_MAJOR=$(npm -v | cut -d. -f1)
-
-    if [ "$NODE_MAJOR" -ge 20 ] && [ "$NPM_MAJOR" -ge 11 ]; then
-        echo "✅ Node $(node -v) and npm $(npm -v) already meet requirements."
-        NEED_NODE=false
-    elif [ "$IS_COLAB" = true ]; then
-        echo "✅ Node $(node -v) and npm $(npm -v) detected in Colab."
-        if [ "$NPM_MAJOR" -lt 11 ]; then
-            echo "   Upgrading npm to latest..."
-            npm install -g npm@latest > /dev/null 2>&1
-        fi
-        NEED_NODE=false
-    else
-        echo "⚠️  Node $(node -v) / npm $(npm -v) too old. Installing via nvm..."
-    fi
+if [ "$IS_PIP_INSTALL" = true ]; then
+    echo "✅ Running from pip install — frontend already bundled, skipping Node/build"
 else
-    echo "⚠️  Node/npm not found. Installing via nvm..."
-fi
+    # ── Node.js / npm ──
+    NEED_NODE=true
 
-if [ "$NEED_NODE" = true ]; then
-    echo "Installing nvm..."
-    curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash > /dev/null 2>&1
+    if command -v node &>/dev/null && command -v npm &>/dev/null; then
+        NODE_MAJOR=$(node -v | sed 's/v//' | cut -d. -f1)
+        NPM_MAJOR=$(npm -v | cut -d. -f1)
 
-    export NVM_DIR="$HOME/.nvm"
-    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-
-    echo "Installing Node LTS..."
-    run_quiet "nvm install" nvm install --lts
-    nvm use --lts > /dev/null 2>&1
-
-    NODE_MAJOR=$(node -v | sed 's/v//' | cut -d. -f1)
-    NPM_MAJOR=$(npm -v | cut -d. -f1)
-
-    if [ "$NODE_MAJOR" -lt 20 ]; then
-        echo "❌ ERROR: Node version must be >= 20 (got $(node -v))"
-        exit 1
+        if [ "$NODE_MAJOR" -ge 20 ] && [ "$NPM_MAJOR" -ge 11 ]; then
+            echo "✅ Node $(node -v) and npm $(npm -v) already meet requirements."
+            NEED_NODE=false
+        elif [ "$IS_COLAB" = true ]; then
+            echo "✅ Node $(node -v) and npm $(npm -v) detected in Colab."
+            if [ "$NPM_MAJOR" -lt 11 ]; then
+                echo "   Upgrading npm to latest..."
+                npm install -g npm@latest > /dev/null 2>&1
+            fi
+            NEED_NODE=false
+        else
+            echo "⚠️  Node $(node -v) / npm $(npm -v) too old. Installing via nvm..."
+        fi
+    else
+        echo "⚠️  Node/npm not found. Installing via nvm..."
     fi
-    if [ "$NPM_MAJOR" -lt 11 ]; then
-        echo "⚠️  npm version is $(npm -v), updating..."
-        run_quiet "npm update" npm install -g npm@latest
+
+    if [ "$NEED_NODE" = true ]; then
+        echo "Installing nvm..."
+        curl -so- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash > /dev/null 2>&1
+
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+
+        echo "Installing Node LTS..."
+        run_quiet "nvm install" nvm install --lts
+        nvm use --lts > /dev/null 2>&1
+
+        NODE_MAJOR=$(node -v | sed 's/v//' | cut -d. -f1)
+        NPM_MAJOR=$(npm -v | cut -d. -f1)
+
+        if [ "$NODE_MAJOR" -lt 20 ]; then
+            echo "❌ ERROR: Node version must be >= 20 (got $(node -v))"
+            exit 1
+        fi
+        if [ "$NPM_MAJOR" -lt 11 ]; then
+            echo "⚠️  npm version is $(npm -v), updating..."
+            run_quiet "npm update" npm install -g npm@latest
+        fi
     fi
+
+    echo "✅ Node $(node -v) | npm $(npm -v)"
+
+    # ── Build React frontend ──
+    REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+    echo ""
+    echo "Building frontend..."
+    cd "$REPO_ROOT/frontend"
+    run_quiet "npm install" npm install
+    run_quiet "npm run build" npm run build
+    cd "$REPO_ROOT"
+
+    # Copy build into the Python package
+    PACKAGE_BUILD_DIR="$REPO_ROOT/roland_ui_demo/studio/frontend/build"
+    rm -rf "$PACKAGE_BUILD_DIR"
+    cp -r "$REPO_ROOT/frontend/build" "$PACKAGE_BUILD_DIR"
+
+    echo "✅ Frontend built"
 fi
-
-echo "✅ Node $(node -v) | npm $(npm -v)"
-
-# ══════════════════════════════════════════════
-# Step 2: Build React frontend
-# ══════════════════════════════════════════════
-echo ""
-echo "Building frontend..."
-cd "$SCRIPT_DIR/frontend"
-run_quiet "npm install" npm install
-run_quiet "npm run build" npm run build
-cd "$SCRIPT_DIR"
-
-# Copy build into the Python package
-PACKAGE_BUILD_DIR="$SCRIPT_DIR/roland_ui_demo/studio/frontend/build"
-rm -rf "$PACKAGE_BUILD_DIR"
-cp -r "$SCRIPT_DIR/frontend/build" "$PACKAGE_BUILD_DIR"
-
-echo "✅ Frontend built"
 
 # ══════════════════════════════════════════════
 # Step 3: Python environment + dependencies
@@ -146,15 +159,17 @@ echo "✅ Using $BEST_PY ($BEST_VER)"
 install_python_deps() {
     run_quiet "pip upgrade" pip install --upgrade pip
 
-    # Copy requirements into the Python package (needed for editable install)
-    REQS_DST="$SCRIPT_DIR/roland_ui_demo/requirements"
-    mkdir -p "$REQS_DST"
-    cp "$REQS_DIR"/*.txt "$REQS_DST/"
+    if [ "$IS_PIP_INSTALL" = false ]; then
+        # Running from repo: copy requirements and do editable install
+        REQS_DIR="$(cd "$SCRIPT_DIR/../../backend/requirements" && pwd)"
+        REQS_DST="$PACKAGE_DIR/requirements"
+        mkdir -p "$REQS_DST"
+        cp "$REQS_DIR"/*.txt "$REQS_DST/"
 
-    # Lightweight editable install — gets the CLI entry point + lightweight deps
-    # (does NOT install unsloth/torch/etc., those are in the requirement files)
-    echo "   Installing CLI entry point..."
-    run_quiet "pip install -e" pip install -e "$SCRIPT_DIR"
+        REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+        echo "   Installing CLI entry point..."
+        run_quiet "pip install -e" pip install -e "$REPO_ROOT"
+    fi
 
     # Call run_install() directly via Python import (NOT via the CLI,
     # because the CLI calls setup.sh which would cause recursion)
@@ -166,10 +181,13 @@ if [ "$IS_COLAB" = true ]; then
     install_python_deps
     echo "✅ Python dependencies installed"
 else
-    # Local: create fresh venv
-    rm -rf .venv
-    "$BEST_PY" -m venv .venv
-    source .venv/bin/activate
+    if [ "$IS_PIP_INSTALL" = false ]; then
+        # From repo: create fresh venv
+        REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+        rm -rf "$REPO_ROOT/.venv"
+        "$BEST_PY" -m venv "$REPO_ROOT/.venv"
+        source "$REPO_ROOT/.venv/bin/activate"
+    fi
 
     install_python_deps
     echo "✅ Python dependencies installed"
@@ -186,7 +204,7 @@ else
 fi
 
 # ══════════════════════════════════════════════
-# Step 4: Done
+# Done
 # ══════════════════════════════════════════════
 echo ""
 echo "╔══════════════════════════════════════╗"
@@ -195,9 +213,7 @@ echo "╠═══════════════════════�
 if [ "$IS_COLAB" = true ]; then
     echo "║ Ready to start in Colab!             ║"
 else
-    echo "║ Activate your venv, then:            ║"
-    echo "║                                      ║"
-    echo "║   source .venv/bin/activate           ║"
-    echo "║   unsloth-roland-test studio               ║"
+    echo "║ Run:                                 ║"
+    echo "║   unsloth-roland-test studio         ║"
 fi
 echo "╚══════════════════════════════════════╝"

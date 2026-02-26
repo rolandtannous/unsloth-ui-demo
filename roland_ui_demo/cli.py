@@ -47,10 +47,9 @@ def main():
 
     if args.command == "studio":
         if args.studio_command == "install":
-            from roland_ui_demo.installer import run_install
+            from roland_ui_demo.installer import run_setup
 
-            return run_install(
-                skip_patch=args.skip_patch,
+            return run_setup(
                 dry_run=args.dry_run,
             )
         else:

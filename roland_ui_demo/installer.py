@@ -2,8 +2,14 @@
 
 Runs the 6 requirement files in the correct order with the correct pip flags,
 replicating what setup.sh does but from Python so it can ship inside a wheel.
+
+When called via the CLI (`unsloth-roland-test studio install`), detects the OS
+and runs the appropriate setup script (setup.sh on Linux/macOS, setup.ps1 on
+Windows). The setup script handles Node, frontend, venv, then calls back into
+run_install() directly for the ordered pip steps.
 """
 
+import platform
 import subprocess
 import sys
 import urllib.request
@@ -11,6 +17,7 @@ from pathlib import Path
 from typing import Optional
 
 from roland_ui_demo.requirements import get_requirements_dir
+from roland_ui_demo.scripts import get_scripts_dir
 
 # The 6 install steps in exact order.
 # Each tuple: (label, filename, extra_pip_flags)
@@ -105,12 +112,54 @@ def _apply_llama_cpp_patch(dry_run: bool = False) -> None:
         print(f"  You can skip this with --skip-patch and apply it manually later.")
 
 
+def run_setup(dry_run: bool = False) -> int:
+    """
+    Detect OS and run the appropriate platform setup script.
+
+    Linux/macOS → setup.sh (bash)
+    Windows     → setup.ps1 (PowerShell)
+
+    The setup script handles Node, frontend build, venv creation, then
+    calls run_install() directly for the ordered pip steps.
+
+    Returns 0 on success, non-zero on failure.
+    """
+    scripts_dir = get_scripts_dir()
+    system = platform.system()
+
+    if system == "Windows":
+        script = scripts_dir / "setup.ps1"
+        cmd = ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(script)]
+    else:
+        script = scripts_dir / "setup.sh"
+        cmd = ["bash", str(script)]
+
+    if not script.exists():
+        print(f"❌ Setup script not found: {script}")
+        return 1
+
+    print(f"Detected platform: {system}")
+    print(f"Running: {script.name}")
+    print()
+
+    if dry_run:
+        print(f"[dry-run] Would run: {' '.join(cmd)}")
+        return 0
+
+    result = subprocess.run(cmd, check=False)
+    return result.returncode
+
+
 def run_install(
     skip_patch: bool = False,
     dry_run: bool = False,
 ) -> int:
     """
-    Run the full ordered install sequence.
+    Run the 6 ordered pip install steps.
+
+    This is called either:
+    - Directly by setup.sh/setup.ps1 (after they handle Node/frontend/venv)
+    - Directly by a user who already has a venv and just needs the pip steps
 
     Returns 0 on success, 1 on failure.
     """
@@ -118,7 +167,7 @@ def run_install(
     total = len(INSTALL_STEPS)
 
     print("=" * 50)
-    print("  roland-ui-demo install")
+    print("  unsloth-roland-test studio install")
     print("  Ordered dependency installation")
     print("=" * 50)
     print()
@@ -141,7 +190,7 @@ def run_install(
         if not req_file.exists():
             print(f"[{i}/{total}] ❌ ERROR: {req_file} not found!")
             print(f"  Requirements files may not be bundled. Are you running from")
-            print(f"  a proper install? Try: pip install ui-roland-test")
+            print(f"  a proper install? Try: pip install unsloth-roland-test")
             return 1
 
         print(f"[{i}/{total}] {label}...")

@@ -39,4 +39,6 @@ include = ["roland_ui_demo*"]
 roland_ui_demo = [
     "studio/frontend/build/**/*",
     "requirements/*.txt",
+    "scripts/setup.sh",
+    "scripts/setup.ps1",
 ]

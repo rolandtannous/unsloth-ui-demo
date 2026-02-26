@@ -179,13 +179,31 @@ if (Test-Path $LlamaServerBin) {
     Write-Host ""
     Write-Host "[OK] llama-server already exists at $LlamaServerBin" -ForegroundColor Green
 } else {
+    # -- Prerequisites: CMake (auto-install via winget if missing) --
     $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
+    if (-not $HasCmake) {
+        Write-Host ""
+        Write-Host "CMake not found -- installing via winget..." -ForegroundColor Yellow
+        $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
+        if ($HasWinget) {
+            try {
+                winget install Kitware.CMake --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+                Refresh-Path
+                $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
+            } catch { }
+        }
+        if ($HasCmake) {
+            Write-Host "[OK] CMake installed" -ForegroundColor Green
+        } else {
+            Write-Host "[SKIP] CMake could not be installed -- skipping llama-server build" -ForegroundColor Yellow
+            Write-Host "       Install CMake from https://cmake.org/download/ and re-run." -ForegroundColor Yellow
+        }
+    }
+
     $HasGitNow = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
 
     if (-not $HasCmake) {
-        Write-Host ""
-        Write-Host "[SKIP] cmake not found -- skipping llama-server build (GGUF inference unavailable)" -ForegroundColor Yellow
-        Write-Host "       Install CMake and re-run to enable GGUF inference." -ForegroundColor Yellow
+        # Already printed skip message above
     } elseif (-not $HasGitNow) {
         Write-Host ""
         Write-Host "[SKIP] git not found -- skipping llama-server build" -ForegroundColor Yellow
@@ -200,47 +218,47 @@ if (Test-Path $LlamaServerBin) {
         $FailedStep = ""
         $BuildDir = Join-Path $LlamaCppDir "build"
 
+        # Native commands (git, cmake) write to stderr even on success.
+        # With $ErrorActionPreference = "Stop" (set at top of script), PS 5.1
+        # converts stderr lines into terminating ErrorRecords, breaking output
+        # capture. Lower to "Continue" for this section.
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+
         # -- Step A: Clone or pull llama.cpp --
         if (Test-Path (Join-Path $LlamaCppDir ".git")) {
             Write-Host "   llama.cpp repo already cloned, pulling latest..." -ForegroundColor Gray
-            try { git -C $LlamaCppDir pull 2>&1 | Out-Null } catch { }
+            git -C $LlamaCppDir pull *> $null
         } else {
             Write-Host "   Cloning llama.cpp..." -ForegroundColor Gray
             if (Test-Path $LlamaCppDir) { Remove-Item -Recurse -Force $LlamaCppDir }
             $tmpLog = [System.IO.Path]::GetTempFileName()
-            try {
-                $output = git clone --depth 1 https://github.com/ggml-org/llama.cpp.git $LlamaCppDir 2>&1
-                $output | Out-File -FilePath $tmpLog -Encoding utf8
-                if ($LASTEXITCODE -ne 0) { throw "git clone exited with code $LASTEXITCODE" }
-            } catch {
+            git clone --depth 1 https://github.com/ggml-org/llama.cpp.git $LlamaCppDir *> $tmpLog
+            if ($LASTEXITCODE -ne 0) {
                 $BuildOk = $false
                 $FailedStep = "git clone"
-                Write-Host "   [FAILED] git clone failed:" -ForegroundColor Red
-                if (Test-Path $tmpLog) { Get-Content $tmpLog | ForEach-Object { Write-Host "   $_" -ForegroundColor Red } }
-                Write-Host "   Error: $($_.Exception.Message)" -ForegroundColor Red
+                Write-Host "   [FAILED] git clone failed (exit code $LASTEXITCODE):" -ForegroundColor Red
+                Get-Content $tmpLog | ForEach-Object { Write-Host "   $_" -ForegroundColor Red }
             }
-            if (Test-Path $tmpLog) { Remove-Item -Force $tmpLog }
+            Remove-Item -Force $tmpLog -ErrorAction SilentlyContinue
         }
 
-        # -- Step B: Detect CUDA and run cmake configure --
+        # -- Step B: Detect CUDA (+ auto-install toolkit) and run cmake configure --
         if ($BuildOk) {
             $CmakeArgs = @()
             $NvccPath = $null
 
             # 1. Check nvcc on PATH
             $NvccCmd = Get-Command nvcc -ErrorAction SilentlyContinue
-            if ($NvccCmd) {
-                $NvccPath = $NvccCmd.Source
-            }
+            if ($NvccCmd) { $NvccPath = $NvccCmd.Source }
 
-            # 2. Search common CUDA Toolkit install locations on Windows
+            # 2. Check CUDA_PATH env var and standard toolkit directories
             if (-not $NvccPath) {
                 $CudaRoot = $env:CUDA_PATH
                 if ($CudaRoot -and (Test-Path (Join-Path $CudaRoot 'bin\nvcc.exe'))) {
                     $NvccPath = Join-Path $CudaRoot 'bin\nvcc.exe'
                     $env:PATH = (Join-Path $CudaRoot 'bin') + ';' + $env:PATH
                 } else {
-                    # Scan C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v*
                     $ToolkitBase = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA'
                     if (Test-Path $ToolkitBase) {
                         $Latest = Get-ChildItem -Directory $ToolkitBase | Sort-Object Name | Select-Object -Last 1
@@ -252,36 +270,65 @@ if (Test-Path $LlamaServerBin) {
                 }
             }
 
+            # 3. GPU driver present but no toolkit -- auto-install via winget
+            if (-not $NvccPath) {
+                $HasNvidiaSmi = $null -ne (Get-Command nvidia-smi -ErrorAction SilentlyContinue)
+                if ($HasNvidiaSmi) {
+                    Write-Host "   CUDA driver detected but toolkit (nvcc) not found." -ForegroundColor Yellow
+                    $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
+                    if ($HasWinget) {
+                        Write-Host "   Installing CUDA Toolkit via winget (this may take several minutes)..." -ForegroundColor Cyan
+                        winget install --id=Nvidia.CUDA -e --accept-package-agreements --accept-source-agreements
+                        Refresh-Path
+                        # Re-check after install: PATH first, then standard dirs
+                        $NvccCmd = Get-Command nvcc -ErrorAction SilentlyContinue
+                        if ($NvccCmd) {
+                            $NvccPath = $NvccCmd.Source
+                        } else {
+                            $ToolkitBase = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA'
+                            if (Test-Path $ToolkitBase) {
+                                $Latest = Get-ChildItem -Directory $ToolkitBase | Sort-Object Name | Select-Object -Last 1
+                                if ($Latest -and (Test-Path (Join-Path $Latest.FullName 'bin\nvcc.exe'))) {
+                                    $NvccPath = Join-Path $Latest.FullName 'bin\nvcc.exe'
+                                    $env:PATH = (Join-Path $Latest.FullName 'bin') + ';' + $env:PATH
+                                }
+                            }
+                        }
+                        if ($NvccPath) {
+                            Write-Host "   [OK] CUDA Toolkit installed (nvcc: $NvccPath)" -ForegroundColor Green
+                        } else {
+                            Write-Host "   [WARN] CUDA Toolkit install did not provide nvcc -- building CPU-only" -ForegroundColor Yellow
+                            Write-Host "   To enable GPU: install manually from https://developer.nvidia.com/cuda-downloads" -ForegroundColor Yellow
+                        }
+                    } else {
+                        Write-Host "   winget not available -- cannot auto-install CUDA Toolkit" -ForegroundColor Yellow
+                        Write-Host "   To enable GPU: install CUDA Toolkit from https://developer.nvidia.com/cuda-downloads" -ForegroundColor Yellow
+                    }
+                }
+            }
+
             if ($NvccPath) {
                 Write-Host "   Building with CUDA support (nvcc: $NvccPath)..." -ForegroundColor Gray
                 $CmakeArgs += '-DGGML_CUDA=ON'
             } else {
-                # 3. Check if GPU driver is present but toolkit is missing
-                $HasNvidiaSmi = $null -ne (Get-Command nvidia-smi -ErrorAction SilentlyContinue)
-                if ($HasNvidiaSmi) {
-                    Write-Host "   CUDA driver detected but nvcc not found -- building CPU-only" -ForegroundColor Yellow
-                    Write-Host "   To enable GPU: install CUDA Toolkit from https://developer.nvidia.com/cuda-downloads" -ForegroundColor Yellow
-                    Write-Host "   Then re-run setup to rebuild with CUDA support." -ForegroundColor Yellow
-                } else {
-                    Write-Host "   Building CPU-only (no CUDA detected)..." -ForegroundColor Gray
+                $HasGpu = $null -ne (Get-Command nvidia-smi -ErrorAction SilentlyContinue)
+                if (-not $HasGpu) {
+                    Write-Host "   Building CPU-only (no NVIDIA GPU detected)..." -ForegroundColor Gray
                 }
+                # If GPU present but no nvcc, warnings were already printed above
             }
 
             Write-Host "   Running cmake configure..." -ForegroundColor Gray
             $tmpLog = [System.IO.Path]::GetTempFileName()
-            try {
-                $cmakeConfigArgs = @('-S', $LlamaCppDir, '-B', $BuildDir) + $CmakeArgs
-                $output = cmake @cmakeConfigArgs 2>&1
-                $output | Out-File -FilePath $tmpLog -Encoding utf8
-                if ($LASTEXITCODE -ne 0) { throw "cmake configure exited with code $LASTEXITCODE" }
-            } catch {
+            $cmakeConfigArgs = @('-S', $LlamaCppDir, '-B', $BuildDir) + $CmakeArgs
+            cmake @cmakeConfigArgs *> $tmpLog
+            if ($LASTEXITCODE -ne 0) {
                 $BuildOk = $false
                 $FailedStep = "cmake configure"
-                Write-Host "   [FAILED] cmake configure failed:" -ForegroundColor Red
-                if (Test-Path $tmpLog) { Get-Content $tmpLog | ForEach-Object { Write-Host "   $_" -ForegroundColor Red } }
-                Write-Host "   Error: $($_.Exception.Message)" -ForegroundColor Red
+                Write-Host "   [FAILED] cmake configure failed (exit code $LASTEXITCODE):" -ForegroundColor Red
+                Get-Content $tmpLog | ForEach-Object { Write-Host "   $_" -ForegroundColor Red }
             }
-            if (Test-Path $tmpLog) { Remove-Item -Force $tmpLog }
+            Remove-Item -Force $tmpLog -ErrorAction SilentlyContinue
         }
 
         # -- Step C: Build llama-server --
@@ -291,38 +338,32 @@ if (Test-Path $LlamaServerBin) {
         if ($BuildOk) {
             Write-Host "   Building llama-server (using $NumCpu cores)..." -ForegroundColor Gray
             $tmpLog = [System.IO.Path]::GetTempFileName()
-            try {
-                $output = cmake --build $BuildDir --config Release --target llama-server -j $NumCpu 2>&1
-                $output | Out-File -FilePath $tmpLog -Encoding utf8
-                if ($LASTEXITCODE -ne 0) { throw "cmake build (llama-server) exited with code $LASTEXITCODE" }
-            } catch {
+            cmake --build $BuildDir --config Release --target llama-server -j $NumCpu *> $tmpLog
+            if ($LASTEXITCODE -ne 0) {
                 $BuildOk = $false
                 $FailedStep = "cmake build (llama-server)"
-                Write-Host "   [FAILED] cmake build (llama-server) failed:" -ForegroundColor Red
-                if (Test-Path $tmpLog) {
-                    # Show last 30 lines to avoid flooding the terminal
-                    $lines = Get-Content $tmpLog
-                    if ($lines.Count -gt 30) {
-                        Write-Host "   ... (showing last 30 lines of $($lines.Count) total) ..." -ForegroundColor Gray
-                        $lines = $lines[-30..-1]
-                    }
-                    $lines | ForEach-Object { Write-Host "   $_" -ForegroundColor Red }
+                Write-Host "   [FAILED] cmake build (llama-server) failed (exit code $LASTEXITCODE):" -ForegroundColor Red
+                $lines = Get-Content $tmpLog
+                if ($lines.Count -gt 30) {
+                    Write-Host "   ... (showing last 30 lines of $($lines.Count) total) ..." -ForegroundColor Gray
+                    $lines = $lines[-30..-1]
                 }
-                Write-Host "   Error: $($_.Exception.Message)" -ForegroundColor Red
+                $lines | ForEach-Object { Write-Host "   $_" -ForegroundColor Red }
             }
-            if (Test-Path $tmpLog) { Remove-Item -Force $tmpLog }
+            Remove-Item -Force $tmpLog -ErrorAction SilentlyContinue
         }
 
         # -- Step D: Build llama-quantize (optional, best-effort) --
         if ($BuildOk) {
             Write-Host "   Building llama-quantize..." -ForegroundColor Gray
-            try {
-                $output = cmake --build $BuildDir --config Release --target llama-quantize -j $NumCpu 2>&1
-                if ($LASTEXITCODE -ne 0) { throw "cmake build (llama-quantize) exited with code $LASTEXITCODE" }
-            } catch {
+            cmake --build $BuildDir --config Release --target llama-quantize -j $NumCpu *> $null
+            if ($LASTEXITCODE -ne 0) {
                 Write-Host "   [WARN] llama-quantize build failed (GGUF export may be unavailable)" -ForegroundColor Yellow
             }
         }
+
+        # Restore ErrorActionPreference
+        $ErrorActionPreference = $prevEAP
 
         # -- Summary --
         if ($BuildOk -and (Test-Path $LlamaServerBin)) {

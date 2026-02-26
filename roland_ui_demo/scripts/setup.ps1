@@ -48,6 +48,30 @@ Write-Host "|       Unsloth Studio Setup (Windows)         |" -ForegroundColor G
 Write-Host "+==============================================+" -ForegroundColor Green
 
 # ============================================
+# Step 0: Git (required by pip for git+https:// deps and by npm)
+# ============================================
+$HasGit = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
+if (-not $HasGit) {
+    Write-Host "Git not found -- installing via winget..." -ForegroundColor Yellow
+    $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
+    if ($HasWinget) {
+        try {
+            winget install Git.Git --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+            Refresh-Path
+            $HasGit = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
+        } catch { }
+    }
+    if (-not $HasGit) {
+        Write-Host "[ERROR] Git is required but could not be installed automatically." -ForegroundColor Red
+        Write-Host "        Install Git from https://git-scm.com/download/win and re-run." -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "[OK] Git installed: $(git --version)" -ForegroundColor Green
+} else {
+    Write-Host "[OK] Git found: $(git --version)" -ForegroundColor Green
+}
+
+# ============================================
 # Step 1: Node.js / npm (always -- needed regardless of install method)
 # ============================================
 $NeedNode = $true

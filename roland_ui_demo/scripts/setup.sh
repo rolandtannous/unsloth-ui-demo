@@ -49,6 +49,26 @@ if [[ "$keynames" == *$'\nCOLAB_'* ]]; then
 fi
 
 # ══════════════════════════════════════════════
+# Step 0: Git (required by pip for git+https:// deps)
+# ══════════════════════════════════════════════
+if ! command -v git &>/dev/null; then
+    echo "⚠️  Git not found — installing..."
+    if [ "$IS_COLAB" = true ] || command -v apt-get &>/dev/null; then
+        sudo apt-get update -y > /dev/null 2>&1
+        sudo apt-get install -y git > /dev/null 2>&1
+    elif command -v yum &>/dev/null; then
+        sudo yum install -y git > /dev/null 2>&1
+    elif command -v brew &>/dev/null; then
+        brew install git > /dev/null 2>&1
+    else
+        echo "❌ ERROR: Git is required. Install it and re-run."
+        echo "  https://git-scm.com/downloads"
+        exit 1
+    fi
+fi
+echo "✅ Git: $(git --version)"
+
+# ══════════════════════════════════════════════
 # Step 1: Node.js / npm (always — needed regardless of install method)
 # ══════════════════════════════════════════════
 NEED_NODE=true

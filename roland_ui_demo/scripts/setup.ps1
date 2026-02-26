@@ -312,20 +312,28 @@ if (Test-Path $LlamaServerBin) {
                 }
             }
 
-            # -- Set CUDA_PATH at Process + User level so cmake AND MSBuild can find it --
-            # MSBuild's CUDA .targets reads CudaToolkitDir from CUDA_PATH env var.
-            # [Environment]::SetEnvironmentVariable with 'Process' scope ensures child
-            # processes (cmake -> msbuild) inherit it reliably.
-            # 'User' scope persists it to the registry for future sessions.
+            # -- Set CUDA env vars so cmake AND MSBuild can find the toolkit --
+            # cmake's enable_language(CUDA) generates a temp .vcxproj that imports
+            # CUDA XX.X.targets but NOT CUDA XX.X.props. The .props file normally
+            # sets CudaToolkitDir from $(CUDA_PATH), but without it CudaToolkitDir
+            # is empty and MSBuild fails with "The CUDA Toolkit directory '' does
+            # not exist." Fix: set CudaToolkitDir directly as an env var -- MSBuild
+            # reads all env vars as MSBuild properties.
             if ($NvccPath) {
                 $CudaToolkitRoot = Split-Path (Split-Path $NvccPath -Parent) -Parent
+                # CUDA_PATH: used by cmake's find_package(CUDAToolkit)
                 [Environment]::SetEnvironmentVariable('CUDA_PATH', $CudaToolkitRoot, 'Process')
-                # Also persist to User registry if not already set at any level
+                # CudaToolkitDir: the MSBuild property that CUDA .targets checks directly
+                # Trailing backslash required -- the .targets file appends subpaths to it
+                [Environment]::SetEnvironmentVariable('CudaToolkitDir', "$CudaToolkitRoot\", 'Process')
+                Write-Host "   CUDA_PATH=$CudaToolkitRoot" -ForegroundColor Gray
+                Write-Host "   CudaToolkitDir=$CudaToolkitRoot\" -ForegroundColor Gray
+                # Persist CUDA_PATH to User registry if not already set
                 $existingSys = [Environment]::GetEnvironmentVariable('CUDA_PATH', 'Machine')
                 $existingUsr = [Environment]::GetEnvironmentVariable('CUDA_PATH', 'User')
                 if (-not $existingSys -and -not $existingUsr) {
                     [Environment]::SetEnvironmentVariable('CUDA_PATH', $CudaToolkitRoot, 'User')
-                    Write-Host "   Persisted CUDA_PATH=$CudaToolkitRoot to user environment" -ForegroundColor Gray
+                    Write-Host "   Persisted CUDA_PATH to user environment" -ForegroundColor Gray
                 }
                 # Ensure nvcc's bin dir is on PATH for this process
                 $nvccBinDir = Split-Path $NvccPath -Parent

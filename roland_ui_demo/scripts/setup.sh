@@ -68,6 +68,24 @@ if ! command -v git &>/dev/null; then
 fi
 echo "✅ Git: $(git --version)"
 
+# ── CMake (needed for building triton kernels and other C++ deps from source) ──
+if ! command -v cmake &>/dev/null; then
+    echo "⚠️  CMake not found — installing..."
+    if [ "$IS_COLAB" = true ] || command -v apt-get &>/dev/null; then
+        sudo apt-get update -y > /dev/null 2>&1
+        sudo apt-get install -y cmake > /dev/null 2>&1
+    elif command -v yum &>/dev/null; then
+        sudo yum install -y cmake > /dev/null 2>&1
+    elif command -v brew &>/dev/null; then
+        brew install cmake > /dev/null 2>&1
+    else
+        echo "❌ ERROR: CMake is required. Install it and re-run."
+        echo "  https://cmake.org/download/"
+        exit 1
+    fi
+fi
+echo "✅ CMake: $(cmake --version | head -1)"
+
 # ══════════════════════════════════════════════
 # Step 1: Node.js / npm (always — needed regardless of install method)
 # ══════════════════════════════════════════════

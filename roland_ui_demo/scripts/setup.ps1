@@ -197,21 +197,33 @@ if (Test-Path $LlamaServerBin) {
         if (-not (Test-Path $UnslothDir)) { New-Item -ItemType Directory -Path $UnslothDir -Force | Out-Null }
 
         $BuildOk = $true
+        $FailedStep = ""
+        $BuildDir = Join-Path $LlamaCppDir "build"
 
+        # -- Step A: Clone or pull llama.cpp --
         if (Test-Path (Join-Path $LlamaCppDir ".git")) {
             Write-Host "   llama.cpp repo already cloned, pulling latest..." -ForegroundColor Gray
             try { git -C $LlamaCppDir pull 2>&1 | Out-Null } catch { }
         } else {
+            Write-Host "   Cloning llama.cpp..." -ForegroundColor Gray
             if (Test-Path $LlamaCppDir) { Remove-Item -Recurse -Force $LlamaCppDir }
+            $tmpLog = [System.IO.Path]::GetTempFileName()
             try {
-                git clone --depth 1 https://github.com/ggml-org/llama.cpp.git $LlamaCppDir 2>&1 | Out-Null
+                $output = git clone --depth 1 https://github.com/ggml-org/llama.cpp.git $LlamaCppDir 2>&1
+                $output | Out-File -FilePath $tmpLog -Encoding utf8
+                if ($LASTEXITCODE -ne 0) { throw "git clone exited with code $LASTEXITCODE" }
             } catch {
                 $BuildOk = $false
+                $FailedStep = "git clone"
+                Write-Host "   [FAILED] git clone failed:" -ForegroundColor Red
+                if (Test-Path $tmpLog) { Get-Content $tmpLog | ForEach-Object { Write-Host "   $_" -ForegroundColor Red } }
+                Write-Host "   Error: $($_.Exception.Message)" -ForegroundColor Red
             }
+            if (Test-Path $tmpLog) { Remove-Item -Force $tmpLog }
         }
 
+        # -- Step B: Detect CUDA and run cmake configure --
         if ($BuildOk) {
-            # Detect CUDA on Windows
             $CmakeArgs = @()
             $NvccPath = Get-Command nvcc -ErrorAction SilentlyContinue
             if ($NvccPath) {
@@ -221,33 +233,64 @@ if (Test-Path $LlamaServerBin) {
                 Write-Host "   Building CPU-only (no CUDA detected)..." -ForegroundColor Gray
             }
 
-            $BuildDir = Join-Path $LlamaCppDir "build"
+            Write-Host "   Running cmake configure..." -ForegroundColor Gray
+            $tmpLog = [System.IO.Path]::GetTempFileName()
             try {
                 $cmakeConfigArgs = @('-S', $LlamaCppDir, '-B', $BuildDir) + $CmakeArgs
-                cmake @cmakeConfigArgs 2>&1 | Out-Null
+                $output = cmake @cmakeConfigArgs 2>&1
+                $output | Out-File -FilePath $tmpLog -Encoding utf8
+                if ($LASTEXITCODE -ne 0) { throw "cmake configure exited with code $LASTEXITCODE" }
             } catch {
                 $BuildOk = $false
+                $FailedStep = "cmake configure"
+                Write-Host "   [FAILED] cmake configure failed:" -ForegroundColor Red
+                if (Test-Path $tmpLog) { Get-Content $tmpLog | ForEach-Object { Write-Host "   $_" -ForegroundColor Red } }
+                Write-Host "   Error: $($_.Exception.Message)" -ForegroundColor Red
             }
+            if (Test-Path $tmpLog) { Remove-Item -Force $tmpLog }
         }
 
+        # -- Step C: Build llama-server --
         $NumCpu = [Environment]::ProcessorCount
         if ($NumCpu -lt 1) { $NumCpu = 4 }
 
         if ($BuildOk) {
+            Write-Host "   Building llama-server (using $NumCpu cores)..." -ForegroundColor Gray
+            $tmpLog = [System.IO.Path]::GetTempFileName()
             try {
-                cmake --build $BuildDir --config Release --target llama-server -j $NumCpu 2>&1 | Out-Null
+                $output = cmake --build $BuildDir --config Release --target llama-server -j $NumCpu 2>&1
+                $output | Out-File -FilePath $tmpLog -Encoding utf8
+                if ($LASTEXITCODE -ne 0) { throw "cmake build (llama-server) exited with code $LASTEXITCODE" }
             } catch {
                 $BuildOk = $false
+                $FailedStep = "cmake build (llama-server)"
+                Write-Host "   [FAILED] cmake build (llama-server) failed:" -ForegroundColor Red
+                if (Test-Path $tmpLog) {
+                    # Show last 30 lines to avoid flooding the terminal
+                    $lines = Get-Content $tmpLog
+                    if ($lines.Count -gt 30) {
+                        Write-Host "   ... (showing last 30 lines of $($lines.Count) total) ..." -ForegroundColor Gray
+                        $lines = $lines[-30..-1]
+                    }
+                    $lines | ForEach-Object { Write-Host "   $_" -ForegroundColor Red }
+                }
+                Write-Host "   Error: $($_.Exception.Message)" -ForegroundColor Red
+            }
+            if (Test-Path $tmpLog) { Remove-Item -Force $tmpLog }
+        }
+
+        # -- Step D: Build llama-quantize (optional, best-effort) --
+        if ($BuildOk) {
+            Write-Host "   Building llama-quantize..." -ForegroundColor Gray
+            try {
+                $output = cmake --build $BuildDir --config Release --target llama-quantize -j $NumCpu 2>&1
+                if ($LASTEXITCODE -ne 0) { throw "cmake build (llama-quantize) exited with code $LASTEXITCODE" }
+            } catch {
+                Write-Host "   [WARN] llama-quantize build failed (GGUF export may be unavailable)" -ForegroundColor Yellow
             }
         }
 
-        # Also build llama-quantize (needed by unsloth-zoo GGUF export pipeline)
-        if ($BuildOk) {
-            try {
-                cmake --build $BuildDir --config Release --target llama-quantize -j $NumCpu 2>&1 | Out-Null
-            } catch { }
-        }
-
+        # -- Summary --
         if ($BuildOk -and (Test-Path $LlamaServerBin)) {
             Write-Host "[OK] llama-server built at $LlamaServerBin" -ForegroundColor Green
             $QuantizeBin = Join-Path $BuildDir "bin\Release\llama-quantize.exe"
@@ -255,7 +298,10 @@ if (Test-Path $LlamaServerBin) {
                 Write-Host "[OK] llama-quantize available for GGUF export" -ForegroundColor Green
             }
         } else {
-            Write-Host "[SKIP] llama-server build failed -- GGUF inference unavailable, but everything else works" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "[SKIP] llama-server build failed at step: $FailedStep" -ForegroundColor Yellow
+            Write-Host "       GGUF inference unavailable, but everything else works." -ForegroundColor Yellow
+            Write-Host "       To retry: delete $LlamaCppDir and re-run setup." -ForegroundColor Yellow
         }
     }
 }

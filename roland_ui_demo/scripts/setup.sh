@@ -37,6 +37,25 @@ run_quiet() {
     fi
 }
 
+# Like run_quiet but returns the exit code instead of exiting the script.
+# Used for optional build steps (e.g. llama-server) where failure is not fatal.
+run_quiet_nofail() {
+    local label="$1"
+    shift
+    local tmplog
+    tmplog=$(mktemp)
+    if "$@" > "$tmplog" 2>&1; then
+        rm -f "$tmplog"
+        return 0
+    else
+        local exit_code=$?
+        echo "❌ $label failed (exit code $exit_code):"
+        cat "$tmplog"
+        rm -f "$tmplog"
+        return $exit_code
+    fi
+}
+
 echo "╔══════════════════════════════════════╗"
 echo "║     Unsloth Studio Setup Script      ║"
 echo "╚══════════════════════════════════════╝"
@@ -269,14 +288,22 @@ else
         mkdir -p "$HOME/.unsloth"
 
         BUILD_OK=true
+        FAILED_STEP=""
+
+        # -- Step A: Clone or pull llama.cpp --
         if [ -d "$LLAMA_CPP_DIR/.git" ]; then
             echo "   llama.cpp repo already cloned, pulling latest..."
-            run_quiet "pull llama.cpp" git -C "$LLAMA_CPP_DIR" pull || true
+            run_quiet_nofail "pull llama.cpp" git -C "$LLAMA_CPP_DIR" pull || true
         else
+            echo "   Cloning llama.cpp..."
             rm -rf "$LLAMA_CPP_DIR"
-            run_quiet "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR" || BUILD_OK=false
+            if ! run_quiet_nofail "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR"; then
+                BUILD_OK=false
+                FAILED_STEP="git clone"
+            fi
         fi
 
+        # -- Step B: Detect CUDA and run cmake configure --
         if [ "$BUILD_OK" = true ]; then
             CMAKE_ARGS=""
             # Detect CUDA: check nvcc on PATH, then common install locations
@@ -295,7 +322,7 @@ else
                 echo "   Building with CUDA support (nvcc: $NVCC_PATH)..."
                 CMAKE_ARGS="-DGGML_CUDA=ON"
             elif [ -d /usr/local/cuda ] || nvidia-smi &>/dev/null; then
-                echo "   CUDA driver detected but nvcc not found — building CPU-only"
+                echo "   CUDA driver detected but nvcc not found -- building CPU-only"
                 echo "   To enable GPU: install cuda-toolkit or add nvcc to PATH"
             else
                 echo "   Building CPU-only (no CUDA detected)..."
@@ -303,29 +330,46 @@ else
 
             NCPU=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
-            run_quiet "cmake llama.cpp" cmake -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" $CMAKE_ARGS || BUILD_OK=false
-        fi
-
-        if [ "$BUILD_OK" = true ]; then
-            run_quiet "build llama-server" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
-        fi
-
-        # Also build llama-quantize (needed by unsloth-zoo's GGUF export pipeline)
-        if [ "$BUILD_OK" = true ]; then
-            run_quiet "build llama-quantize" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-quantize -j"$NCPU" || true
-            QUANTIZE_BIN="$LLAMA_CPP_DIR/build/bin/llama-quantize"
-            if [ -f "$QUANTIZE_BIN" ]; then
-                ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
+            echo "   Running cmake configure..."
+            if ! run_quiet_nofail "cmake configure" cmake -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" $CMAKE_ARGS; then
+                BUILD_OK=false
+                FAILED_STEP="cmake configure"
             fi
         fi
 
+        # -- Step C: Build llama-server --
+        if [ "$BUILD_OK" = true ]; then
+            echo "   Building llama-server (using $NCPU cores)..."
+            if ! run_quiet_nofail "build llama-server" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-server -j"$NCPU"; then
+                BUILD_OK=false
+                FAILED_STEP="cmake build (llama-server)"
+            fi
+        fi
+
+        # -- Step D: Build llama-quantize (optional, best-effort) --
+        if [ "$BUILD_OK" = true ]; then
+            echo "   Building llama-quantize..."
+            if ! run_quiet_nofail "build llama-quantize" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-quantize -j"$NCPU"; then
+                echo "   [WARN] llama-quantize build failed (GGUF export may be unavailable)"
+            else
+                QUANTIZE_BIN="$LLAMA_CPP_DIR/build/bin/llama-quantize"
+                if [ -f "$QUANTIZE_BIN" ]; then
+                    ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
+                fi
+            fi
+        fi
+
+        # -- Summary --
         if [ "$BUILD_OK" = true ] && [ -f "$LLAMA_SERVER_BIN" ]; then
             echo "✅ llama-server built at $LLAMA_SERVER_BIN"
             if [ -f "$LLAMA_CPP_DIR/llama-quantize" ]; then
                 echo "✅ llama-quantize available for GGUF export"
             fi
         else
-            echo "⚠️  llama-server build failed — GGUF inference won't be available, but everything else works"
+            echo ""
+            echo "⚠️  llama-server build failed at step: $FAILED_STEP"
+            echo "   GGUF inference won't be available, but everything else works."
+            echo "   To retry: delete $LLAMA_CPP_DIR and re-run setup."
         fi
     fi
 fi

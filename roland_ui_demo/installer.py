@@ -209,12 +209,11 @@ def run_install(
             print(f"❌ {e}")
             return 1
 
-        # After extras step: notify about Windows source builds
+        # After extras step: notify about Windows-skipped packages
         if i == 2 and IS_WINDOWS and WINDOWS_SKIPPED_PACKAGES:
-            print("  ⚠️  The following pip packages were skipped (no pre-built wheel):")
-            for pkg in WINDOWS_SKIPPED_PACKAGES:
-                print(f"     - {pkg}")
-            print("  Will attempt to build from source after pip steps complete.")
+            print("  ⚠️  The following packages were skipped on Windows (no pre-built wheel):")
+            for pkg, url in WINDOWS_SKIPPED_PACKAGES.items():
+                print(f"     - {pkg}  (see: {url})")
             print()
 
         # Apply patch after step 5 (triton-kernels), before step 6 (studio)

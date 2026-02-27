@@ -49,69 +49,88 @@ if (-not $HasCmake) { Write-Host "[ERROR] cmake not found." -ForegroundColor Red
 Write-Host "[OK] cmake: $(cmake --version | Select-Object -First 1)" -ForegroundColor Green
 
 # Visual Studio / Build Tools -- detect for cmake -G flag
-# Strategy: (1) try vswhere, (2) fall back to scanning known filesystem paths
+# Strategy: (1) vswhere, (2) scan filesystem, (3) auto-install, (4) re-scan
 $CmakeGenerator = $null
 $VsInstallPath = $null
 $vsGeneratorMap = @{ '2022' = '17'; '2019' = '16'; '2017' = '15' }
 
-# --- Method 1: vswhere (works when VS is properly registered) ---
-$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-if (Test-Path $vswhere) {
-    $vsInfo = & $vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property catalog_productLineVersion 2>$null
-    $vsInstPath = & $vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
-    if ($vsInfo -and $vsInstPath) {
-        $vsYear = $vsInfo.Trim()
-        $vsNum = $vsGeneratorMap[$vsYear]
-        if ($vsNum) {
-            $CmakeGenerator = "Visual Studio $vsNum $vsYear"
-            $VsInstallPath = $vsInstPath.Trim()
-            Write-Host "[OK] Visual Studio $vsYear detected via vswhere" -ForegroundColor Green
+# Scans known VS installation directories for cl.exe.
+# Returns @{ Generator = "Visual Studio 17 2022"; InstallPath = "C:\..." } or $null.
+function Find-VsBuildTools {
+    $map = @{ '2022' = '17'; '2019' = '16'; '2017' = '15' }
+
+    # --- Try vswhere first (works when VS is properly registered) ---
+    $vsw = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path $vsw) {
+        $info = & $vsw -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property catalog_productLineVersion 2>$null
+        $path = & $vsw -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
+        if ($info -and $path) {
+            $y = $info.Trim()
+            $n = $map[$y]
+            if ($n) {
+                return @{ Generator = "Visual Studio $n $y"; InstallPath = $path.Trim(); Source = 'vswhere' }
+            }
         }
     }
-}
 
-# --- Method 2: Scan filesystem (handles broken vswhere registration) ---
-if (-not $CmakeGenerator) {
-    Write-Host "   vswhere did not find VS -- scanning filesystem..." -ForegroundColor Gray
-    $searchRoots = @($env:ProgramFiles, ${env:ProgramFiles(x86)})
+    # --- Scan filesystem (handles broken vswhere registration) ---
+    $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)})
     $editions = @('BuildTools', 'Community', 'Professional', 'Enterprise')
-    $years = @('2022', '2019', '2017')  # newest first
+    $years = @('2022', '2019', '2017')
 
-    foreach ($year in $years) {
-        foreach ($root in $searchRoots) {
-            foreach ($edition in $editions) {
-                $candidatePath = Join-Path $root "Microsoft Visual Studio\$year\$edition"
-                if (Test-Path $candidatePath) {
-                    # Verify cl.exe actually exists (proves C++ tools are installed)
-                    $clSearch = Join-Path $candidatePath "VC\Tools\MSVC"
-                    if (Test-Path $clSearch) {
-                        $clExe = Get-ChildItem -Path $clSearch -Filter "cl.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-                        if ($clExe) {
-                            $vsNum = $vsGeneratorMap[$year]
-                            if ($vsNum) {
-                                $CmakeGenerator = "Visual Studio $vsNum $year"
-                                $VsInstallPath = $candidatePath
-                                Write-Host "[OK] Visual Studio $year ($edition) found at $candidatePath" -ForegroundColor Green
-                                Write-Host "   cl.exe: $($clExe.FullName)" -ForegroundColor Gray
-                                break
+    foreach ($y in $years) {
+        foreach ($r in $roots) {
+            foreach ($ed in $editions) {
+                $candidate = Join-Path $r "Microsoft Visual Studio\$y\$ed"
+                if (Test-Path $candidate) {
+                    $vcDir = Join-Path $candidate "VC\Tools\MSVC"
+                    if (Test-Path $vcDir) {
+                        $cl = Get-ChildItem -Path $vcDir -Filter "cl.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+                        if ($cl) {
+                            $n = $map[$y]
+                            if ($n) {
+                                return @{ Generator = "Visual Studio $n $y"; InstallPath = $candidate; Source = "filesystem ($ed)"; ClExe = $cl.FullName }
                             }
                         }
                     }
                 }
             }
-            if ($CmakeGenerator) { break }
         }
-        if ($CmakeGenerator) { break }
+    }
+
+    return $null
+}
+
+$vsResult = Find-VsBuildTools
+
+# --- Auto-install if not found ---
+if (-not $vsResult) {
+    Write-Host "   Visual Studio Build Tools not found -- installing via winget..." -ForegroundColor Yellow
+    Write-Host "   (This is a one-time install, may take several minutes)" -ForegroundColor Gray
+    $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
+    if ($HasWinget) {
+        $prevEAPTemp = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        winget install Microsoft.VisualStudio.2022.BuildTools --accept-package-agreements --accept-source-agreements --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive --wait"
+        $ErrorActionPreference = $prevEAPTemp
+        # Re-scan filesystem after install (don't trust vswhere catalog)
+        $vsResult = Find-VsBuildTools
     }
 }
 
-if (-not $CmakeGenerator) {
-    Write-Host "[ERROR] Visual Studio Build Tools not found." -ForegroundColor Red
-    Write-Host "        Install with:" -ForegroundColor Red
-    Write-Host '        winget install Microsoft.VisualStudio.2022.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive"' -ForegroundColor Yellow
+if ($vsResult) {
+    $CmakeGenerator = $vsResult.Generator
+    $VsInstallPath = $vsResult.InstallPath
+    Write-Host "[OK] $CmakeGenerator detected via $($vsResult.Source)" -ForegroundColor Green
+    if ($vsResult.ClExe) { Write-Host "   cl.exe: $($vsResult.ClExe)" -ForegroundColor Gray }
+    Write-Host "   cmake generator: $CmakeGenerator" -ForegroundColor Gray
+} else {
+    Write-Host "[ERROR] Visual Studio Build Tools could not be found or installed." -ForegroundColor Red
+    Write-Host "        Manual install:" -ForegroundColor Red
+    Write-Host '        1. winget install Microsoft.VisualStudio.2022.BuildTools' -ForegroundColor Yellow
+    Write-Host '        2. Open Visual Studio Installer -> Modify -> check "Desktop development with C++"' -ForegroundColor Yellow
     exit 1
 }
-Write-Host "   cmake generator: $CmakeGenerator" -ForegroundColor Gray
 
 $NumCpu = [Environment]::ProcessorCount
 if ($NumCpu -lt 1) { $NumCpu = 4 }

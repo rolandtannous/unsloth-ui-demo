@@ -169,8 +169,13 @@ Write-Host "+==============================================+" -ForegroundColor G
 Write-Host "|       Unsloth Studio Setup (Windows)         |" -ForegroundColor Green
 Write-Host "+==============================================+" -ForegroundColor Green
 
+# ==========================================================================
+#  PHASE 1: System-level prerequisites (winget installs, env vars)
+#  All heavy system tool installs happen here BEFORE touching Python.
+# ==========================================================================
+
 # ============================================
-# Step 0: GPU requirement check
+# 1a. GPU requirement check
 # ============================================
 $HasNvidiaSmi = $null -ne (Get-Command nvidia-smi -ErrorAction SilentlyContinue)
 if (-not $HasNvidiaSmi) {
@@ -185,7 +190,7 @@ if (-not $HasNvidiaSmi) {
 Write-Host "[OK] NVIDIA GPU detected" -ForegroundColor Green
 
 # ============================================
-# Step 1: Git (required by pip for git+https:// deps and by npm)
+# 1b. Git (required by pip for git+https:// deps and by npm)
 # ============================================
 $HasGit = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
 if (-not $HasGit) {
@@ -209,7 +214,133 @@ if (-not $HasGit) {
 }
 
 # ============================================
-# Step 2: Node.js / npm (always -- needed regardless of install method)
+# 1c. CMake (required for llama.cpp build)
+# ============================================
+$HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
+if (-not $HasCmake) {
+    Write-Host "CMake not found -- installing via winget..." -ForegroundColor Yellow
+    $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
+    if ($HasWinget) {
+        try {
+            winget install Kitware.CMake --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+            Refresh-Environment
+            $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
+        } catch { }
+    }
+    if ($HasCmake) {
+        Write-Host "[OK] CMake installed" -ForegroundColor Green
+    } else {
+        Write-Host "[ERROR] CMake is required but could not be installed." -ForegroundColor Red
+        Write-Host "        Install CMake from https://cmake.org/download/ and re-run." -ForegroundColor Red
+        exit 1
+    }
+} else {
+    Write-Host "[OK] CMake found: $(cmake --version | Select-Object -First 1)" -ForegroundColor Green
+}
+
+# ============================================
+# 1d. Visual Studio Build Tools (C++ compiler for llama.cpp)
+# ============================================
+$CmakeGenerator = $null
+$VsInstallPath = $null
+$vsResult = Find-VsBuildTools
+
+if (-not $vsResult) {
+    Write-Host "Visual Studio Build Tools not found -- installing via winget..." -ForegroundColor Yellow
+    Write-Host "   (This is a one-time install, may take several minutes)" -ForegroundColor Gray
+    $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
+    if ($HasWinget) {
+        $prevEAPTemp = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        winget install Microsoft.VisualStudio.2022.BuildTools --source winget --accept-package-agreements --accept-source-agreements --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive --wait"
+        $ErrorActionPreference = $prevEAPTemp
+        # Re-scan after install (don't trust vswhere catalog)
+        $vsResult = Find-VsBuildTools
+    }
+}
+
+if ($vsResult) {
+    $CmakeGenerator = $vsResult.Generator
+    $VsInstallPath = $vsResult.InstallPath
+    Write-Host "[OK] $CmakeGenerator detected via $($vsResult.Source)" -ForegroundColor Green
+    if ($vsResult.ClExe) { Write-Host "   cl.exe: $($vsResult.ClExe)" -ForegroundColor Gray }
+} else {
+    Write-Host "[ERROR] Visual Studio Build Tools could not be found or installed." -ForegroundColor Red
+    Write-Host "        Manual install:" -ForegroundColor Red
+    Write-Host '        1. winget install Microsoft.VisualStudio.2022.BuildTools --source winget' -ForegroundColor Yellow
+    Write-Host '        2. Open Visual Studio Installer -> Modify -> check "Desktop development with C++"' -ForegroundColor Yellow
+    exit 1
+}
+
+# ============================================
+# 1e. CUDA Toolkit (nvcc for llama.cpp build + env vars)
+# ============================================
+$NvccPath = Find-Nvcc
+
+if (-not $NvccPath) {
+    Write-Host "CUDA driver detected but toolkit (nvcc) not found -- installing via winget..." -ForegroundColor Yellow
+    $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
+    if ($HasWinget) {
+        Write-Host "   Installing CUDA Toolkit via winget..." -ForegroundColor Cyan
+        winget install --id=Nvidia.CUDA -e --source winget --accept-package-agreements --accept-source-agreements
+        Refresh-Environment
+        $NvccPath = Find-Nvcc
+        if ($NvccPath) {
+            Write-Host "   [OK] CUDA Toolkit installed (nvcc: $NvccPath)" -ForegroundColor Green
+        }
+    }
+}
+
+if (-not $NvccPath) {
+    Write-Host "[ERROR] CUDA Toolkit (nvcc) is required but could not be found or installed." -ForegroundColor Red
+    Write-Host "        Install CUDA Toolkit from https://developer.nvidia.com/cuda-downloads" -ForegroundColor Yellow
+    exit 1
+}
+
+# -- Set CUDA env vars so cmake AND MSBuild can find the toolkit --
+$CudaToolkitRoot = Split-Path (Split-Path $NvccPath -Parent) -Parent
+# CUDA_PATH: used by cmake's find_package(CUDAToolkit)
+[Environment]::SetEnvironmentVariable('CUDA_PATH', $CudaToolkitRoot, 'Process')
+# CudaToolkitDir: the MSBuild property that CUDA .targets checks directly
+# Trailing backslash required -- the .targets file appends subpaths to it
+[Environment]::SetEnvironmentVariable('CudaToolkitDir', "$CudaToolkitRoot\", 'Process')
+# Persist CUDA_PATH to User registry if not already set
+$existingSys = [Environment]::GetEnvironmentVariable('CUDA_PATH', 'Machine')
+$existingUsr = [Environment]::GetEnvironmentVariable('CUDA_PATH', 'User')
+if (-not $existingSys -and -not $existingUsr) {
+    [Environment]::SetEnvironmentVariable('CUDA_PATH', $CudaToolkitRoot, 'User')
+    Write-Host "   Persisted CUDA_PATH to user environment" -ForegroundColor Gray
+}
+# Ensure nvcc's bin dir is on PATH for this process
+$nvccBinDir = Split-Path $NvccPath -Parent
+if ($env:PATH -notlike "*$nvccBinDir*") {
+    [Environment]::SetEnvironmentVariable('PATH', "$nvccBinDir;$env:PATH", 'Process')
+}
+# Persist nvcc bin dir to User PATH so it works in new terminals
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+if (-not $userPath -or $userPath -notlike "*$nvccBinDir*") {
+    if ($userPath) {
+        [Environment]::SetEnvironmentVariable('Path', "$nvccBinDir;$userPath", 'User')
+    } else {
+        [Environment]::SetEnvironmentVariable('Path', "$nvccBinDir", 'User')
+    }
+    Write-Host "   Persisted CUDA bin dir to user PATH" -ForegroundColor Gray
+}
+
+Write-Host "[OK] CUDA Toolkit: $NvccPath" -ForegroundColor Green
+Write-Host "   CUDA_PATH      = $CudaToolkitRoot" -ForegroundColor Gray
+Write-Host "   CudaToolkitDir = $CudaToolkitRoot\" -ForegroundColor Gray
+
+# Detect compute capability (used later for llama.cpp cmake)
+$CudaArch = Get-CudaComputeCapability
+if ($CudaArch) {
+    Write-Host "   Compute Capability = $($CudaArch.Insert($CudaArch.Length-1, '.')) (sm_$CudaArch)" -ForegroundColor Gray
+} else {
+    Write-Host "   [WARN] Could not detect compute capability -- cmake will use defaults" -ForegroundColor Yellow
+}
+
+# ============================================
+# 1f. Node.js / npm (always -- needed regardless of install method)
 # ============================================
 $NeedNode = $true
 try {
@@ -244,9 +375,13 @@ if ($NeedNode) {
 
 Write-Host "[OK] Node $(node -v) | npm $(npm -v)" -ForegroundColor Green
 
-# ============================================
-# Step 3: Build React frontend (skip if pip-installed -- already bundled)
-# ============================================
+Write-Host ""
+Write-Host "--- System prerequisites ready ---" -ForegroundColor Green
+Write-Host ""
+
+# ==========================================================================
+#  PHASE 2: Frontend build (skip if pip-installed -- already bundled)
+# ==========================================================================
 if ($IsPipInstall) {
     Write-Host "[OK] Running from pip install - frontend already bundled, skipping build" -ForegroundColor Green
 } else {
@@ -266,9 +401,9 @@ if ($IsPipInstall) {
     Write-Host "[OK] Frontend built" -ForegroundColor Green
 }
 
-# ============================================
-# Step 4: Python environment + dependencies
-# ============================================
+# ==========================================================================
+#  PHASE 3: Python environment + dependencies
+# ==========================================================================
 Write-Host ""
 Write-Host "Setting up Python environment..." -ForegroundColor Cyan
 
@@ -334,13 +469,14 @@ pip install torch torchvision torchaudio --index-url "https://download.pytorch.o
 Write-Host "   Running ordered dependency installation..." -ForegroundColor Cyan
 python -c "from roland_ui_demo.installer import run_install; exit(run_install())"
 
-# ============================================
-# Step 5: Build llama.cpp with CUDA for GGUF inference + export
-# ============================================
+# ==========================================================================
+#  PHASE 4: Build llama.cpp with CUDA for GGUF inference + export
+# ==========================================================================
 # Builds at ~/.unsloth/llama.cpp/ (persistent across pip upgrades).
 # We build:
 #   - llama-server:   for GGUF model inference
 #   - llama-quantize: for GGUF export quantization
+# Prerequisites (git, cmake, VS Build Tools, CUDA Toolkit) already installed in Phase 1.
 $LlamaCppDir = Join-Path $env:USERPROFILE ".unsloth\llama.cpp"
 $BuildDir = Join-Path $LlamaCppDir "build"
 $LlamaServerBin = Join-Path $BuildDir "bin\Release\llama-server.exe"
@@ -349,131 +485,6 @@ if (Test-Path $LlamaServerBin) {
     Write-Host ""
     Write-Host "[OK] llama-server already exists at $LlamaServerBin" -ForegroundColor Green
 } else {
-    # -- Prerequisites: CMake (auto-install via winget if missing) --
-    $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
-    if (-not $HasCmake) {
-        Write-Host ""
-        Write-Host "CMake not found -- installing via winget..." -ForegroundColor Yellow
-        $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
-        if ($HasWinget) {
-            try {
-                winget install Kitware.CMake --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
-                Refresh-Environment
-                $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
-            } catch { }
-        }
-        if ($HasCmake) {
-            Write-Host "[OK] CMake installed" -ForegroundColor Green
-        } else {
-            Write-Host "[ERROR] CMake is required but could not be installed." -ForegroundColor Red
-            Write-Host "        Install CMake from https://cmake.org/download/ and re-run." -ForegroundColor Red
-            exit 1
-        }
-    }
-
-    $HasGitNow = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
-    if (-not $HasGitNow) {
-        Write-Host "[ERROR] git not found -- cannot build llama.cpp" -ForegroundColor Red
-        exit 1
-    }
-
-    # -- Visual Studio Build Tools (detect or auto-install) --
-    $CmakeGenerator = $null
-    $VsInstallPath = $null
-    $vsResult = Find-VsBuildTools
-
-    if (-not $vsResult) {
-        Write-Host "   Visual Studio Build Tools not found -- installing via winget..." -ForegroundColor Yellow
-        Write-Host "   (This is a one-time install, may take several minutes)" -ForegroundColor Gray
-        $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
-        if ($HasWinget) {
-            $prevEAPTemp = $ErrorActionPreference
-            $ErrorActionPreference = "Continue"
-            winget install Microsoft.VisualStudio.2022.BuildTools --source winget --accept-package-agreements --accept-source-agreements --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive --wait"
-            $ErrorActionPreference = $prevEAPTemp
-            # Re-scan after install (don't trust vswhere catalog)
-            $vsResult = Find-VsBuildTools
-        }
-    }
-
-    if ($vsResult) {
-        $CmakeGenerator = $vsResult.Generator
-        $VsInstallPath = $vsResult.InstallPath
-        Write-Host "[OK] $CmakeGenerator detected via $($vsResult.Source)" -ForegroundColor Green
-        if ($vsResult.ClExe) { Write-Host "   cl.exe: $($vsResult.ClExe)" -ForegroundColor Gray }
-    } else {
-        Write-Host "[ERROR] Visual Studio Build Tools could not be found or installed." -ForegroundColor Red
-        Write-Host "        Manual install:" -ForegroundColor Red
-        Write-Host '        1. winget install Microsoft.VisualStudio.2022.BuildTools --source winget' -ForegroundColor Yellow
-        Write-Host '        2. Open Visual Studio Installer -> Modify -> check "Desktop development with C++"' -ForegroundColor Yellow
-        exit 1
-    }
-
-    # -- CUDA Toolkit (detect or auto-install) --
-    $NvccPath = Find-Nvcc
-
-    if (-not $NvccPath) {
-        Write-Host "   CUDA driver detected but toolkit (nvcc) not found." -ForegroundColor Yellow
-        $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
-        if ($HasWinget) {
-            Write-Host "   Installing CUDA Toolkit via winget..." -ForegroundColor Cyan
-            winget install --id=Nvidia.CUDA -e --source winget --accept-package-agreements --accept-source-agreements
-            Refresh-Environment
-            $NvccPath = Find-Nvcc
-            if ($NvccPath) {
-                Write-Host "   [OK] CUDA Toolkit installed (nvcc: $NvccPath)" -ForegroundColor Green
-            }
-        }
-    }
-
-    if (-not $NvccPath) {
-        Write-Host "[ERROR] CUDA Toolkit (nvcc) is required but could not be found or installed." -ForegroundColor Red
-        Write-Host "        Install CUDA Toolkit from https://developer.nvidia.com/cuda-downloads" -ForegroundColor Yellow
-        exit 1
-    }
-
-    # -- Set CUDA env vars so cmake AND MSBuild can find the toolkit --
-    $CudaToolkitRoot = Split-Path (Split-Path $NvccPath -Parent) -Parent
-    # CUDA_PATH: used by cmake's find_package(CUDAToolkit)
-    [Environment]::SetEnvironmentVariable('CUDA_PATH', $CudaToolkitRoot, 'Process')
-    # CudaToolkitDir: the MSBuild property that CUDA .targets checks directly
-    # Trailing backslash required -- the .targets file appends subpaths to it
-    [Environment]::SetEnvironmentVariable('CudaToolkitDir', "$CudaToolkitRoot\", 'Process')
-    # Persist CUDA_PATH to User registry if not already set
-    $existingSys = [Environment]::GetEnvironmentVariable('CUDA_PATH', 'Machine')
-    $existingUsr = [Environment]::GetEnvironmentVariable('CUDA_PATH', 'User')
-    if (-not $existingSys -and -not $existingUsr) {
-        [Environment]::SetEnvironmentVariable('CUDA_PATH', $CudaToolkitRoot, 'User')
-        Write-Host "   Persisted CUDA_PATH to user environment" -ForegroundColor Gray
-    }
-    # Ensure nvcc's bin dir is on PATH for this process
-    $nvccBinDir = Split-Path $NvccPath -Parent
-    if ($env:PATH -notlike "*$nvccBinDir*") {
-        [Environment]::SetEnvironmentVariable('PATH', "$nvccBinDir;$env:PATH", 'Process')
-    }
-    # Persist nvcc bin dir to User PATH so it works in new terminals
-    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if (-not $userPath -or $userPath -notlike "*$nvccBinDir*") {
-        if ($userPath) {
-            [Environment]::SetEnvironmentVariable('Path', "$nvccBinDir;$userPath", 'User')
-        } else {
-            [Environment]::SetEnvironmentVariable('Path', "$nvccBinDir", 'User')
-        }
-        Write-Host "   Persisted CUDA bin dir to user PATH" -ForegroundColor Gray
-    }
-
-    Write-Host "[OK] CUDA Toolkit: $NvccPath" -ForegroundColor Green
-    Write-Host "   CUDA_PATH      = $CudaToolkitRoot" -ForegroundColor Gray
-    Write-Host "   CudaToolkitDir = $CudaToolkitRoot\" -ForegroundColor Gray
-
-    # Detect compute capability
-    $CudaArch = Get-CudaComputeCapability
-    if ($CudaArch) {
-        Write-Host "   Compute Capability = $($CudaArch.Insert($CudaArch.Length-1, '.')) (sm_$CudaArch)" -ForegroundColor Gray
-    } else {
-        Write-Host "   [WARN] Could not detect compute capability -- cmake will use defaults" -ForegroundColor Yellow
-    }
-
     Write-Host ""
     Write-Host "Building llama.cpp with CUDA support..." -ForegroundColor Cyan
     Write-Host "   This typically takes 5-10 minutes on first build." -ForegroundColor Gray

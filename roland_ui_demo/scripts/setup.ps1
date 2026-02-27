@@ -295,8 +295,37 @@ if (Test-Path $LlamaServerBin) {
                     Write-Host "   CUDA driver detected but toolkit (nvcc) not found." -ForegroundColor Yellow
                     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
                     if ($HasWinget) {
-                        Write-Host "   Installing CUDA Toolkit via winget (this may take several minutes)..." -ForegroundColor Cyan
-                        winget install --id=Nvidia.CUDA -e --source winget --accept-package-agreements --accept-source-agreements
+                        Write-Host "   Installing CUDA Toolkit via winget (skipping Nsight tools)..." -ForegroundColor Cyan
+                        # Detect CUDA version available in winget
+                        $cudaVer = $null
+                        $showOutput = winget show --id=Nvidia.CUDA --source winget 2>$null
+                        foreach ($line in $showOutput) {
+                            if ($line -match '^\s*Version\s*:\s*(\d+\.\d+)') {
+                                $cudaVer = $Matches[1]
+                                break
+                            }
+                        }
+                        if ($cudaVer) {
+                            # Install only build-essential components (skip nsight_systems, nsight_compute, nsight_vse)
+                            $cudaComponents = @(
+                                "nvcc_$cudaVer", "cudart_$cudaVer",
+                                "cublas_$cudaVer", "cublas_dev_$cudaVer",
+                                "cufft_$cudaVer", "cufft_dev_$cudaVer",
+                                "curand_$cudaVer", "curand_dev_$cudaVer",
+                                "cusolver_$cudaVer", "cusolver_dev_$cudaVer",
+                                "cusparse_$cudaVer", "cusparse_dev_$cudaVer",
+                                "npp_$cudaVer", "npp_dev_$cudaVer",
+                                "nvrtc_$cudaVer", "nvrtc_dev_$cudaVer",
+                                "nvml_dev_$cudaVer",
+                                "visual_studio_integration_$cudaVer"
+                            ) -join ' '
+                            Write-Host "   CUDA version: $cudaVer" -ForegroundColor Gray
+                            winget install --id=Nvidia.CUDA -e --source winget --accept-package-agreements --accept-source-agreements --override "-s $cudaComponents"
+                        } else {
+                            # Fallback: install everything if version detection fails
+                            Write-Host "   [WARN] Could not detect CUDA version -- installing full toolkit" -ForegroundColor Yellow
+                            winget install --id=Nvidia.CUDA -e --source winget --accept-package-agreements --accept-source-agreements
+                        }
                         Refresh-Environment
                         $NvccPath = Find-Nvcc
                         if ($NvccPath) {

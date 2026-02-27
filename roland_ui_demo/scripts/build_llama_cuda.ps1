@@ -248,6 +248,7 @@ if ($NvccPath) {
     if ($HasGpu) {
         Write-Host "[WARN] NVIDIA GPU detected but CUDA Toolkit (nvcc) not found." -ForegroundColor Yellow
         Write-Host "       Install: winget install --id=Nvidia.CUDA -e --source winget" -ForegroundColor Yellow
+        Write-Host "       (setup.ps1 auto-installs CUDA -- this test script does not)" -ForegroundColor Gray
     } else {
         Write-Host "[INFO] No NVIDIA GPU detected -- building CPU-only" -ForegroundColor Gray
     }
@@ -289,12 +290,17 @@ Write-Host "--- cmake configure ---" -ForegroundColor Cyan
 $CmakeArgs = @(
     '-S', $LlamaCppDir,
     '-B', $BuildDir,
-    '-G', $CmakeGenerator
+    '-G', $CmakeGenerator,
+    '-Wno-dev'
 )
 if ($VsInstallPath) {
     $CmakeArgs += "-DCMAKE_GENERATOR_INSTANCE=$VsInstallPath"
 }
 $CmakeArgs += '-DBUILD_SHARED_LIBS=OFF'
+# Suppress warnings: no HTTPS needed for local inference, fix CRT lib conflict
+$CmakeArgs += '-DLLAMA_CURL=OFF'
+$CmakeArgs += '-DCMAKE_POLICY_DEFAULT_CMP0194=NEW'
+$CmakeArgs += '-DCMAKE_EXE_LINKER_FLAGS=/NODEFAULTLIB:LIBCMT'
 
 if ($UseCuda) {
     $CmakeArgs += '-DGGML_CUDA=ON'
@@ -335,12 +341,16 @@ if ($cmakeExit -ne 0 -and $UseCuda) {
     $CmakeArgs = @(
         '-S', $LlamaCppDir,
         '-B', $BuildDir,
-        '-G', $CmakeGenerator
+        '-G', $CmakeGenerator,
+        '-Wno-dev'
     )
     if ($VsInstallPath) {
         $CmakeArgs += "-DCMAKE_GENERATOR_INSTANCE=$VsInstallPath"
     }
     $CmakeArgs += '-DBUILD_SHARED_LIBS=OFF'
+    $CmakeArgs += '-DLLAMA_CURL=OFF'
+    $CmakeArgs += '-DCMAKE_POLICY_DEFAULT_CMP0194=NEW'
+    $CmakeArgs += '-DCMAKE_EXE_LINKER_FLAGS=/NODEFAULTLIB:LIBCMT'
     $CmakeArgs += '-DGGML_CUDA=OFF'
     cmake @CmakeArgs
     $cmakeExit = $LASTEXITCODE

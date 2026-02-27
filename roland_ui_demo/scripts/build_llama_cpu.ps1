@@ -179,7 +179,8 @@ $sw = [System.Diagnostics.Stopwatch]::StartNew()
 $CmakeArgs = @(
     '-S', $LlamaCppDir,
     '-B', $BuildDir,
-    '-G', $CmakeGenerator
+    '-G', $CmakeGenerator,
+    '-Wno-dev'
 )
 # Tell cmake exactly where VS is (bypasses registry lookup)
 if ($VsInstallPath) {
@@ -187,6 +188,10 @@ if ($VsInstallPath) {
 }
 $CmakeArgs += '-DBUILD_SHARED_LIBS=OFF'
 $CmakeArgs += '-DGGML_CUDA=OFF'
+# Suppress warnings: no HTTPS needed for local inference, fix CRT lib conflict
+$CmakeArgs += '-DLLAMA_CURL=OFF'
+$CmakeArgs += '-DCMAKE_POLICY_DEFAULT_CMP0194=NEW'
+$CmakeArgs += '-DCMAKE_EXE_LINKER_FLAGS=/NODEFAULTLIB:LIBCMT'
 
 Write-Host "   cmake args:" -ForegroundColor Gray
 foreach ($arg in $CmakeArgs) { Write-Host "     $arg" -ForegroundColor Gray }

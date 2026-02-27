@@ -48,6 +48,35 @@ $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
 if (-not $HasCmake) { Write-Host "[ERROR] cmake not found." -ForegroundColor Red; exit 1 }
 Write-Host "[OK] cmake: $(cmake --version | Select-Object -First 1)" -ForegroundColor Green
 
+# Visual Studio / Build Tools (cl.exe) -- needed for cmake to find a C/C++ compiler
+$HasCl = $null -ne (Get-Command cl -ErrorAction SilentlyContinue)
+if (-not $HasCl) {
+    $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path $vswhere) {
+        $vsPath = & $vswhere -latest -property installationPath 2>$null
+        if ($vsPath) {
+            $vcvars = Join-Path $vsPath "VC\Auxiliary\Build\vcvars64.bat"
+            if (Test-Path $vcvars) {
+                Write-Host "   Loading Visual Studio environment..." -ForegroundColor Gray
+                $envOutput = cmd /c "`"$vcvars`" >nul 2>&1 && set" 2>$null
+                foreach ($line in $envOutput) {
+                    if ($line -match '^([^=]+)=(.*)$') {
+                        [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')
+                    }
+                }
+                $HasCl = $null -ne (Get-Command cl -ErrorAction SilentlyContinue)
+            }
+        }
+    }
+}
+if ($HasCl) {
+    Write-Host "[OK] C++ compiler (cl.exe) available" -ForegroundColor Green
+} else {
+    Write-Host "[WARN] cl.exe not found -- cmake will try its default generator" -ForegroundColor Yellow
+    Write-Host "       If build fails, install Visual Studio Build Tools:" -ForegroundColor Yellow
+    Write-Host "       winget install Microsoft.VisualStudio.2022.BuildTools" -ForegroundColor Yellow
+}
+
 $NumCpu = [Environment]::ProcessorCount
 if ($NumCpu -lt 1) { $NumCpu = 4 }
 Write-Host "[OK] CPU cores: $NumCpu" -ForegroundColor Green

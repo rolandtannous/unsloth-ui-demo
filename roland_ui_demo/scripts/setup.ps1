@@ -439,6 +439,13 @@ if (-not (Test-Path $VenvDir)) {
     Write-Host "   Reusing existing virtual environment at $VenvDir" -ForegroundColor Green
 }
 
+# pip and python write to stderr even on success (progress bars, warnings).
+# With $ErrorActionPreference = "Stop" (set at top of script), PS 5.1
+# converts stderr lines into terminating ErrorRecords, breaking output.
+# Lower to "Continue" for the pip/python section.
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+
 $ActivateScript = Join-Path $VenvDir "Scripts\Activate.ps1"
 . $ActivateScript
 pip install --upgrade pip 2>&1 | Out-Null
@@ -468,6 +475,9 @@ pip install torch torchvision torchaudio --index-url "https://download.pytorch.o
 # Ordered heavy dependency installation
 Write-Host "   Running ordered dependency installation..." -ForegroundColor Cyan
 python -c "from roland_ui_demo.installer import run_install; exit(run_install())"
+
+# Restore ErrorActionPreference after pip/python work
+$ErrorActionPreference = $prevEAP
 
 # ==========================================================================
 #  PHASE 4: Build llama.cpp with CUDA for GGUF inference + export

@@ -120,42 +120,69 @@ if (-not $HasCmake) {
 }
 Write-Host "[OK] cmake: $(cmake --version | Select-Object -First 1)" -ForegroundColor Green
 
-# Visual Studio / Build Tools -- detect via vswhere so we can pass -G to cmake
+# Visual Studio / Build Tools -- detect for cmake -G flag
+# Strategy: (1) try vswhere, (2) fall back to scanning known filesystem paths
 $CmakeGenerator = $null
+$VsInstallPath = $null
+$vsGeneratorMap = @{ '2022' = '17'; '2019' = '16'; '2017' = '15' }
+
+# --- Method 1: vswhere (works when VS is properly registered) ---
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 if (Test-Path $vswhere) {
     $vsInfo = & $vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property catalog_productLineVersion 2>$null
-    if ($vsInfo) {
+    $vsInstPath = & $vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
+    if ($vsInfo -and $vsInstPath) {
         $vsYear = $vsInfo.Trim()
-        $vsGeneratorMap = @{ '2022' = '17'; '2019' = '16'; '2017' = '15' }
         $vsNum = $vsGeneratorMap[$vsYear]
         if ($vsNum) {
             $CmakeGenerator = "Visual Studio $vsNum $vsYear"
-            Write-Host "[OK] Visual Studio $vsYear (Build Tools) detected" -ForegroundColor Green
+            $VsInstallPath = $vsInstPath.Trim()
+            Write-Host "[OK] Visual Studio $vsYear detected via vswhere" -ForegroundColor Green
         }
     }
-    if (-not $CmakeGenerator) {
-        $vsPath = & $vswhere -latest -property installationPath 2>$null
-        if ($vsPath) {
-            $vsYear = & $vswhere -latest -property catalog_productLineVersion 2>$null
-            if ($vsYear) {
-                $vsYear = $vsYear.Trim()
-                $vsGeneratorMap = @{ '2022' = '17'; '2019' = '16'; '2017' = '15' }
-                $vsNum = $vsGeneratorMap[$vsYear]
-                if ($vsNum) {
-                    $CmakeGenerator = "Visual Studio $vsNum $vsYear"
-                    Write-Host "[OK] Visual Studio $vsYear detected (C++ tools may need install)" -ForegroundColor Yellow
+}
+
+# --- Method 2: Scan filesystem (handles broken vswhere registration) ---
+if (-not $CmakeGenerator) {
+    Write-Host "   vswhere did not find VS -- scanning filesystem..." -ForegroundColor Gray
+    $searchRoots = @($env:ProgramFiles, ${env:ProgramFiles(x86)})
+    $editions = @('BuildTools', 'Community', 'Professional', 'Enterprise')
+    $years = @('2022', '2019', '2017')
+
+    foreach ($year in $years) {
+        foreach ($root in $searchRoots) {
+            foreach ($edition in $editions) {
+                $candidatePath = Join-Path $root "Microsoft Visual Studio\$year\$edition"
+                if (Test-Path $candidatePath) {
+                    $clSearch = Join-Path $candidatePath "VC\Tools\MSVC"
+                    if (Test-Path $clSearch) {
+                        $clExe = Get-ChildItem -Path $clSearch -Filter "cl.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+                        if ($clExe) {
+                            $vsNum = $vsGeneratorMap[$year]
+                            if ($vsNum) {
+                                $CmakeGenerator = "Visual Studio $vsNum $year"
+                                $VsInstallPath = $candidatePath
+                                Write-Host "[OK] Visual Studio $year ($edition) found at $candidatePath" -ForegroundColor Green
+                                Write-Host "   cl.exe: $($clExe.FullName)" -ForegroundColor Gray
+                                break
+                            }
+                        }
+                    }
                 }
             }
+            if ($CmakeGenerator) { break }
         }
+        if ($CmakeGenerator) { break }
     }
 }
+
 if (-not $CmakeGenerator) {
     Write-Host "[ERROR] Visual Studio Build Tools not found." -ForegroundColor Red
-    Write-Host "        Install with: winget install Microsoft.VisualStudio.2022.BuildTools" -ForegroundColor Red
-    Write-Host "        Then install 'Desktop development with C++' workload." -ForegroundColor Red
+    Write-Host "        Install with:" -ForegroundColor Red
+    Write-Host '        winget install Microsoft.VisualStudio.2022.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive"' -ForegroundColor Yellow
     exit 1
 }
+Write-Host "   cmake generator: $CmakeGenerator" -ForegroundColor Gray
 
 Write-Host ""
 
@@ -247,9 +274,12 @@ Write-Host "--- cmake configure ---" -ForegroundColor Cyan
 $CmakeArgs = @(
     '-S', $LlamaCppDir,
     '-B', $BuildDir,
-    '-G', $CmakeGenerator,
-    '-DBUILD_SHARED_LIBS=OFF'
+    '-G', $CmakeGenerator
 )
+if ($VsInstallPath) {
+    $CmakeArgs += "-DCMAKE_GENERATOR_INSTANCE=$VsInstallPath"
+}
+$CmakeArgs += '-DBUILD_SHARED_LIBS=OFF'
 
 if ($UseCuda) {
     $CmakeArgs += '-DGGML_CUDA=ON'
@@ -290,10 +320,13 @@ if ($cmakeExit -ne 0 -and $UseCuda) {
     $CmakeArgs = @(
         '-S', $LlamaCppDir,
         '-B', $BuildDir,
-        '-G', $CmakeGenerator,
-        '-DBUILD_SHARED_LIBS=OFF',
-        '-DGGML_CUDA=OFF'
+        '-G', $CmakeGenerator
     )
+    if ($VsInstallPath) {
+        $CmakeArgs += "-DCMAKE_GENERATOR_INSTANCE=$VsInstallPath"
+    }
+    $CmakeArgs += '-DBUILD_SHARED_LIBS=OFF'
+    $CmakeArgs += '-DGGML_CUDA=OFF'
     cmake @CmakeArgs
     $cmakeExit = $LASTEXITCODE
     $UseCuda = $false

@@ -463,6 +463,12 @@ if (-not $IsPipInstall) {
 
     Write-Host "   Installing CLI entry point..." -ForegroundColor Cyan
     pip install -e $RepoRoot 2>&1 | Out-Null
+} else {
+    # Running from pip install: the package is in system Python but not in
+    # the fresh .venv. Install it so run_install() can find its modules
+    # and bundled requirements files.
+    Write-Host "   Installing package into venv..." -ForegroundColor Cyan
+    pip install unsloth-roland-test 2>&1 | Out-Null
 }
 
 # Pre-install PyTorch with CUDA support.
@@ -647,8 +653,9 @@ Write-Host ""
 Write-Host "+==============================================+" -ForegroundColor Green
 Write-Host "|           Setup Complete!                    |" -ForegroundColor Green
 Write-Host "|                                              |" -ForegroundColor Green
-Write-Host "|  Activate venv first:                        |" -ForegroundColor Green
-Write-Host "|    .\.venv\Scripts\Activate.ps1              |" -ForegroundColor Green
+Write-Host "|  Activate venv:                              |" -ForegroundColor Green
+Write-Host "|    cmd:  .venv\Scripts\activate.bat          |" -ForegroundColor Green
+Write-Host "|    PS:   .\.venv\Scripts\Activate.ps1        |" -ForegroundColor Green
 Write-Host "|                                              |" -ForegroundColor Green
 Write-Host "|  Then run: unsloth-roland-test studio        |" -ForegroundColor Green
 Write-Host "+==============================================+" -ForegroundColor Green

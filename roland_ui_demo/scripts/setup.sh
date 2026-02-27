@@ -9,6 +9,8 @@
 # When running from the git repo (./setup.sh at repo root), the full version
 # handles Node, frontend build, AND dependencies.
 #
+# Requires an NVIDIA GPU -- CPU-only machines are not supported.
+#
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -30,7 +32,7 @@ run_quiet() {
         rm -f "$tmplog"
     else
         local exit_code=$?
-        echo "❌ $label failed (exit code $exit_code):"
+        echo "   [FAILED] $label failed (exit code $exit_code):"
         cat "$tmplog"
         rm -f "$tmplog"
         exit $exit_code
@@ -38,7 +40,7 @@ run_quiet() {
 }
 
 # Like run_quiet but returns the exit code instead of exiting the script.
-# Used for optional build steps (e.g. llama-server) where failure is not fatal.
+# Used for optional build steps (e.g. llama-quantize) where failure is not fatal.
 run_quiet_nofail() {
     local label="$1"
     shift
@@ -49,16 +51,150 @@ run_quiet_nofail() {
         return 0
     else
         local exit_code=$?
-        echo "❌ $label failed (exit code $exit_code):"
+        echo "   [FAILED] $label failed (exit code $exit_code):"
         cat "$tmplog"
         rm -f "$tmplog"
         return $exit_code
     fi
 }
 
-echo "╔══════════════════════════════════════╗"
-echo "║     Unsloth Studio Setup Script      ║"
-echo "╚══════════════════════════════════════╝"
+# ── Detect Linux distro family ──
+# Returns "debian" (Ubuntu, Debian, Mint, etc.) or "redhat" (RHEL, Fedora, CentOS, etc.)
+# or "unknown". No macOS support.
+detect_distro() {
+    if [ -f /etc/debian_version ]; then
+        echo "debian"
+    elif [ -f /etc/redhat-release ] || [ -f /etc/fedora-release ]; then
+        echo "redhat"
+    else
+        echo "unknown"
+    fi
+}
+
+# ── Install C/C++ build dependencies for llama.cpp ──
+install_build_deps() {
+    local distro
+    distro=$(detect_distro)
+
+    echo "   Installing build dependencies ($distro)..."
+
+    if [ "$distro" = "debian" ]; then
+        if command -v sudo &>/dev/null; then
+            sudo apt-get update -y > /dev/null 2>&1
+            sudo apt-get install -y build-essential cmake curl git libcurl4-openssl-dev > /dev/null 2>&1
+        else
+            apt-get update -y > /dev/null 2>&1
+            apt-get install -y build-essential cmake curl git libcurl4-openssl-dev > /dev/null 2>&1
+        fi
+    elif [ "$distro" = "redhat" ]; then
+        if command -v sudo &>/dev/null; then
+            sudo dnf install -y gcc gcc-c++ make cmake curl git libcurl-devel > /dev/null 2>&1 || \
+                sudo yum install -y gcc gcc-c++ make cmake curl git libcurl-devel > /dev/null 2>&1
+        else
+            dnf install -y gcc gcc-c++ make cmake curl git libcurl-devel > /dev/null 2>&1 || \
+                yum install -y gcc gcc-c++ make cmake curl git libcurl-devel > /dev/null 2>&1
+        fi
+    else
+        echo "   [WARN] Unknown distro -- please install build-essential/cmake/git manually"
+    fi
+}
+
+# ── Install CUDA Toolkit on Linux (if GPU present but nvcc missing) ──
+install_cuda_toolkit() {
+    local distro
+    distro=$(detect_distro)
+
+    echo "   Installing CUDA Toolkit..."
+
+    if [ "$distro" = "debian" ]; then
+        # Use NVIDIA's cuda-keyring approach for apt-based distros
+        local os_id os_version_id distro_tag arch
+        os_id=$(. /etc/os-release && echo "$ID")
+        os_version_id=$(. /etc/os-release && echo "$VERSION_ID")
+        distro_tag="${os_id}${os_version_id//./}"
+        arch=$(dpkg --print-architecture 2>/dev/null || echo "x86_64")
+
+        local keyring_url="https://developer.download.nvidia.com/compute/cuda/repos/${distro_tag}/${arch}/cuda-keyring_1.1-1_all.deb"
+        local tmpdir
+        tmpdir=$(mktemp -d)
+
+        echo "   Distro: $distro_tag, Arch: $arch"
+        echo "   Downloading cuda-keyring..."
+
+        if command -v wget &>/dev/null; then
+            wget -q "$keyring_url" -O "$tmpdir/cuda-keyring.deb" 2>/dev/null
+        elif command -v curl &>/dev/null; then
+            curl -fsSL "$keyring_url" -o "$tmpdir/cuda-keyring.deb" 2>/dev/null
+        else
+            echo "   [ERROR] Neither wget nor curl found"
+            rm -rf "$tmpdir"
+            return 1
+        fi
+
+        if [ -f "$tmpdir/cuda-keyring.deb" ]; then
+            if command -v sudo &>/dev/null; then
+                sudo dpkg -i "$tmpdir/cuda-keyring.deb" > /dev/null 2>&1
+                sudo apt-get update -y > /dev/null 2>&1
+                sudo apt-get install -y cuda-toolkit > /dev/null 2>&1
+            else
+                dpkg -i "$tmpdir/cuda-keyring.deb" > /dev/null 2>&1
+                apt-get update -y > /dev/null 2>&1
+                apt-get install -y cuda-toolkit > /dev/null 2>&1
+            fi
+        fi
+        rm -rf "$tmpdir"
+
+    elif [ "$distro" = "redhat" ]; then
+        # Use NVIDIA's dnf/yum repo for RPM-based distros
+        local os_version_id distro_tag arch
+        os_version_id=$(. /etc/os-release && echo "$VERSION_ID" | cut -d. -f1)
+        distro_tag="rhel${os_version_id}"
+        arch=$(uname -m)
+
+        local repo_url="https://developer.download.nvidia.com/compute/cuda/repos/${distro_tag}/${arch}/cuda-${distro_tag}.repo"
+
+        echo "   Distro: $distro_tag, Arch: $arch"
+
+        if command -v sudo &>/dev/null; then
+            sudo dnf config-manager --add-repo "$repo_url" 2>/dev/null || true
+            sudo dnf install -y cuda-toolkit > /dev/null 2>&1
+        else
+            dnf config-manager --add-repo "$repo_url" 2>/dev/null || true
+            dnf install -y cuda-toolkit > /dev/null 2>&1
+        fi
+    else
+        echo "   [WARN] Cannot auto-install CUDA Toolkit on unknown distro"
+        return 1
+    fi
+
+    # Add CUDA to PATH
+    if [ -d /usr/local/cuda/bin ]; then
+        export PATH="/usr/local/cuda/bin:$PATH"
+    fi
+}
+
+# ── Detect CUDA compute capability via nvidia-smi ──
+# Returns e.g. "80" for A100 (8.0), "89" for RTX 4090 (8.9), etc.
+# Returns empty string if detection fails.
+get_cuda_compute_capability() {
+    if ! command -v nvidia-smi &>/dev/null; then
+        echo ""
+        return
+    fi
+
+    local raw
+    raw=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '[:space:]')
+
+    if [[ "$raw" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+        echo "${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+    else
+        echo ""
+    fi
+}
+
+echo "+==============================================+"
+echo "|      Unsloth Studio Setup (Linux)            |"
+echo "+==============================================+"
 
 # ── Detect Colab ──
 IS_COLAB=false
@@ -68,45 +204,47 @@ if [[ "$keynames" == *$'\nCOLAB_'* ]]; then
 fi
 
 # ══════════════════════════════════════════════
-# Step 0: Git (required by pip for git+https:// deps)
+# Step 0: GPU requirement check
 # ══════════════════════════════════════════════
+if ! command -v nvidia-smi &>/dev/null; then
+    echo ""
+    echo "[ERROR] Unsloth Studio requires an NVIDIA GPU."
+    echo "        CPU-only machines are not supported."
+    echo ""
+    echo "        If you have an NVIDIA GPU, ensure the driver is installed:"
+    echo "        https://www.nvidia.com/Download/index.aspx"
+    exit 1
+fi
+echo "[OK] NVIDIA GPU detected"
+
+# ══════════════════════════════════════════════
+# Step 1: Build dependencies (git, cmake, build-essential)
+# ══════════════════════════════════════════════
+NEEDS_BUILD_DEPS=false
+if ! command -v git &>/dev/null; then NEEDS_BUILD_DEPS=true; fi
+if ! command -v cmake &>/dev/null; then NEEDS_BUILD_DEPS=true; fi
+if ! command -v gcc &>/dev/null && ! command -v cc &>/dev/null; then NEEDS_BUILD_DEPS=true; fi
+
+if [ "$NEEDS_BUILD_DEPS" = true ]; then
+    install_build_deps
+fi
+
 if ! command -v git &>/dev/null; then
-    echo "⚠️  Git not found — installing..."
-    if [ "$IS_COLAB" = true ] || command -v apt-get &>/dev/null; then
-        sudo apt-get update -y > /dev/null 2>&1
-        sudo apt-get install -y git > /dev/null 2>&1
-    elif command -v yum &>/dev/null; then
-        sudo yum install -y git > /dev/null 2>&1
-    elif command -v brew &>/dev/null; then
-        brew install git > /dev/null 2>&1
-    else
-        echo "❌ ERROR: Git is required. Install it and re-run."
-        echo "  https://git-scm.com/downloads"
-        exit 1
-    fi
+    echo "[ERROR] Git is required. Install it and re-run."
+    echo "  https://git-scm.com/downloads"
+    exit 1
 fi
-echo "✅ Git: $(git --version)"
+echo "[OK] Git: $(git --version)"
 
-# ── CMake (needed for building triton kernels and other C++ deps from source) ──
 if ! command -v cmake &>/dev/null; then
-    echo "⚠️  CMake not found — installing..."
-    if [ "$IS_COLAB" = true ] || command -v apt-get &>/dev/null; then
-        sudo apt-get update -y > /dev/null 2>&1
-        sudo apt-get install -y cmake > /dev/null 2>&1
-    elif command -v yum &>/dev/null; then
-        sudo yum install -y cmake > /dev/null 2>&1
-    elif command -v brew &>/dev/null; then
-        brew install cmake > /dev/null 2>&1
-    else
-        echo "❌ ERROR: CMake is required. Install it and re-run."
-        echo "  https://cmake.org/download/"
-        exit 1
-    fi
+    echo "[ERROR] CMake is required. Install it and re-run."
+    echo "  https://cmake.org/download/"
+    exit 1
 fi
-echo "✅ CMake: $(cmake --version | head -1)"
+echo "[OK] CMake: $(cmake --version | head -1)"
 
 # ══════════════════════════════════════════════
-# Step 1: Node.js / npm (always — needed regardless of install method)
+# Step 2: Node.js / npm (always -- needed regardless of install method)
 # ══════════════════════════════════════════════
 NEED_NODE=true
 
@@ -115,20 +253,20 @@ if command -v node &>/dev/null && command -v npm &>/dev/null; then
     NPM_MAJOR=$(npm -v | cut -d. -f1)
 
     if [ "$NODE_MAJOR" -ge 20 ] && [ "$NPM_MAJOR" -ge 11 ]; then
-        echo "✅ Node $(node -v) and npm $(npm -v) already meet requirements."
+        echo "[OK] Node $(node -v) and npm $(npm -v) already meet requirements."
         NEED_NODE=false
     elif [ "$IS_COLAB" = true ]; then
-        echo "✅ Node $(node -v) and npm $(npm -v) detected in Colab."
+        echo "[OK] Node $(node -v) and npm $(npm -v) detected in Colab."
         if [ "$NPM_MAJOR" -lt 11 ]; then
             echo "   Upgrading npm to latest..."
             npm install -g npm@latest > /dev/null 2>&1
         fi
         NEED_NODE=false
     else
-        echo "⚠️  Node $(node -v) / npm $(npm -v) too old. Installing via nvm..."
+        echo "[WARN] Node $(node -v) / npm $(npm -v) too old. Installing via nvm..."
     fi
 else
-    echo "⚠️  Node/npm not found. Installing via nvm..."
+    echo "[WARN] Node/npm not found. Installing via nvm..."
 fi
 
 if [ "$NEED_NODE" = true ]; then
@@ -146,22 +284,22 @@ if [ "$NEED_NODE" = true ]; then
     NPM_MAJOR=$(npm -v | cut -d. -f1)
 
     if [ "$NODE_MAJOR" -lt 20 ]; then
-        echo "❌ ERROR: Node version must be >= 20 (got $(node -v))"
+        echo "[ERROR] Node version must be >= 20 (got $(node -v))"
         exit 1
     fi
     if [ "$NPM_MAJOR" -lt 11 ]; then
-        echo "⚠️  npm version is $(npm -v), updating..."
+        echo "[WARN] npm version is $(npm -v), updating..."
         run_quiet "npm update" npm install -g npm@latest
     fi
 fi
 
-echo "✅ Node $(node -v) | npm $(npm -v)"
+echo "[OK] Node $(node -v) | npm $(npm -v)"
 
 # ══════════════════════════════════════════════
-# Step 2: Build React frontend (skip if pip-installed — already bundled)
+# Step 3: Build React frontend (skip if pip-installed -- already bundled)
 # ══════════════════════════════════════════════
 if [ "$IS_PIP_INSTALL" = true ]; then
-    echo "✅ Running from pip install — frontend already bundled, skipping build"
+    echo "[OK] Running from pip install -- frontend already bundled, skipping build"
 else
     REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
     echo ""
@@ -176,11 +314,11 @@ else
     rm -rf "$PACKAGE_BUILD_DIR"
     cp -r "$REPO_ROOT/frontend/build" "$PACKAGE_BUILD_DIR"
 
-    echo "✅ Frontend built"
+    echo "[OK] Frontend built"
 fi
 
 # ══════════════════════════════════════════════
-# Step 3: Python environment + dependencies
+# Step 4: Python environment + dependencies
 # ══════════════════════════════════════════════
 echo ""
 echo "Setting up Python environment..."
@@ -206,12 +344,12 @@ for candidate in $(compgen -c python3 2>/dev/null | grep -E '^python3(\.[0-9]+)?
 done
 
 if [ -z "$BEST_PY" ]; then
-    echo "❌ ERROR: No Python version <= 3.12.x found."
+    echo "[ERROR] No Python version <= 3.12.x found."
     exit 1
 fi
 
 BEST_VER=$("$BEST_PY" --version 2>&1 | awk '{print $2}')
-echo "✅ Using $BEST_PY ($BEST_VER)"
+echo "[OK] Using $BEST_PY ($BEST_VER)"
 
 # ── Install Python deps (ordered!) ──
 install_python_deps() {
@@ -237,7 +375,7 @@ install_python_deps() {
 
 if [ "$IS_COLAB" = true ]; then
     install_python_deps
-    echo "✅ Python dependencies installed"
+    echo "[OK] Python dependencies installed"
 else
     if [ "$IS_PIP_INSTALL" = false ]; then
         # From repo: create fresh venv
@@ -248,21 +386,11 @@ else
     fi
 
     install_python_deps
-    echo "✅ Python dependencies installed"
-
-    # WSL: pre-install GGUF build dependencies
-    if grep -qi microsoft /proc/version 2>/dev/null; then
-        echo ""
-        echo "⚠️  WSL detected — installing build dependencies for GGUF export..."
-        echo "   You may be prompted for your password."
-        sudo apt-get update -y
-        sudo apt-get install -y build-essential cmake curl git libcurl4-openssl-dev
-        echo "✅ GGUF build dependencies installed"
-    fi
+    echo "[OK] Python dependencies installed"
 fi
 
 # ══════════════════════════════════════════════
-# Build llama.cpp binaries for GGUF inference + export
+# Step 5: Build llama.cpp with CUDA for GGUF inference + export
 # ══════════════════════════════════════════════
 # Builds at ~/.unsloth/llama.cpp/ (persistent across pip upgrades).
 # We build:
@@ -273,104 +401,160 @@ LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
 
 if [ -f "$LLAMA_SERVER_BIN" ]; then
     echo ""
-    echo "✅ llama-server already exists at $LLAMA_SERVER_BIN"
+    echo "[OK] llama-server already exists at $LLAMA_SERVER_BIN"
 else
-    if ! command -v cmake &>/dev/null; then
+    # -- CUDA Toolkit: detect or auto-install --
+    NVCC_PATH=""
+    if command -v nvcc &>/dev/null; then
+        NVCC_PATH="$(command -v nvcc)"
+    elif [ -x /usr/local/cuda/bin/nvcc ]; then
+        NVCC_PATH="/usr/local/cuda/bin/nvcc"
+        export PATH="/usr/local/cuda/bin:$PATH"
+    elif ls /usr/local/cuda-*/bin/nvcc &>/dev/null 2>&1; then
+        NVCC_PATH="$(ls -d /usr/local/cuda-*/bin/nvcc 2>/dev/null | sort -V | tail -1)"
+        export PATH="$(dirname "$NVCC_PATH"):$PATH"
+    fi
+
+    if [ -z "$NVCC_PATH" ]; then
         echo ""
-        echo "⚠️  cmake not found — skipping llama-server build (GGUF inference won't be available)"
-        echo "   Install cmake and re-run to enable GGUF inference."
-    elif ! command -v git &>/dev/null; then
-        echo ""
-        echo "⚠️  git not found — skipping llama-server build"
+        echo "   CUDA driver detected but toolkit (nvcc) not found."
+        echo "   Attempting to install CUDA Toolkit..."
+        install_cuda_toolkit
+        # Re-check
+        if command -v nvcc &>/dev/null; then
+            NVCC_PATH="$(command -v nvcc)"
+        elif [ -x /usr/local/cuda/bin/nvcc ]; then
+            NVCC_PATH="/usr/local/cuda/bin/nvcc"
+            export PATH="/usr/local/cuda/bin:$PATH"
+        fi
+    fi
+
+    if [ -z "$NVCC_PATH" ]; then
+        echo "[ERROR] CUDA Toolkit (nvcc) is required but could not be found or installed." >&2
+        echo "        Install CUDA Toolkit from https://developer.nvidia.com/cuda-downloads" >&2
+        exit 1
+    fi
+
+    echo "[OK] CUDA Toolkit: $NVCC_PATH"
+
+    # Detect compute capability
+    CUDA_ARCH=$(get_cuda_compute_capability)
+    if [ -n "$CUDA_ARCH" ]; then
+        echo "   Compute Capability = ${CUDA_ARCH:0:${#CUDA_ARCH}-1}.${CUDA_ARCH: -1} (sm_$CUDA_ARCH)"
     else
+        echo "   [WARN] Could not detect compute capability -- cmake will use defaults"
+    fi
+
+    echo ""
+    echo "Building llama.cpp with CUDA support..."
+    echo "   This typically takes 5-10 minutes on first build."
+    echo ""
+
+    # Start build timer
+    BUILD_START_TIME=$(date +%s)
+
+    mkdir -p "$HOME/.unsloth"
+
+    BUILD_OK=true
+    FAILED_STEP=""
+
+    # -- Step A: Clone or pull llama.cpp --
+    if [ -d "$LLAMA_CPP_DIR/.git" ]; then
+        echo "   llama.cpp repo already cloned, pulling latest..."
+        run_quiet_nofail "pull llama.cpp" git -C "$LLAMA_CPP_DIR" pull || true
+    else
+        echo "   Cloning llama.cpp..."
+        rm -rf "$LLAMA_CPP_DIR"
+        if ! run_quiet_nofail "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR"; then
+            BUILD_OK=false
+            FAILED_STEP="git clone"
+        fi
+    fi
+
+    # -- Step B: cmake configure (CUDA + Unsloth flags) --
+    if [ "$BUILD_OK" = true ]; then
         echo ""
-        echo "Building llama-server for GGUF inference..."
-        mkdir -p "$HOME/.unsloth"
+        echo "--- cmake configure ---"
 
-        BUILD_OK=true
-        FAILED_STEP=""
+        CMAKE_ARGS=(
+            -S "$LLAMA_CPP_DIR"
+            -B "$LLAMA_CPP_DIR/build"
+            -DBUILD_SHARED_LIBS=OFF
+            -DLLAMA_CURL=OFF
+            -DGGML_CUDA=ON
+            -DGGML_CUDA_FA_ALL_QUANTS=ON
+            -DGGML_CUDA_F16=OFF
+            -DGGML_CUDA_GRAPHS=OFF
+            -DGGML_CUDA_FORCE_CUBLAS=OFF
+            -DGGML_CUDA_PEER_MAX_BATCH_SIZE=8192
+        )
+        if [ -n "$CUDA_ARCH" ]; then
+            CMAKE_ARGS+=("-DCMAKE_CUDA_ARCHITECTURES=$CUDA_ARCH")
+        fi
 
-        # -- Step A: Clone or pull llama.cpp --
-        if [ -d "$LLAMA_CPP_DIR/.git" ]; then
-            echo "   llama.cpp repo already cloned, pulling latest..."
-            run_quiet_nofail "pull llama.cpp" git -C "$LLAMA_CPP_DIR" pull || true
+        echo "   cmake args:"
+        for arg in "${CMAKE_ARGS[@]}"; do
+            echo "     $arg"
+        done
+        echo ""
+
+        if ! cmake "${CMAKE_ARGS[@]}"; then
+            BUILD_OK=false
+            FAILED_STEP="cmake configure"
+        fi
+    fi
+
+    # -- Step C: Build llama-server --
+    NCPU=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+    # Reduce parallelism on Colab to avoid OOM
+    if [ "$IS_COLAB" = true ] && [ "$NCPU" -gt 2 ]; then
+        NCPU=2
+    fi
+
+    if [ "$BUILD_OK" = true ]; then
+        echo ""
+        echo "--- cmake build (llama-server) ---"
+        echo "   Parallel jobs: $NCPU"
+        echo ""
+
+        if ! cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-server -j"$NCPU"; then
+            BUILD_OK=false
+            FAILED_STEP="cmake build (llama-server)"
+        fi
+    fi
+
+    # -- Step D: Build llama-quantize (optional, best-effort) --
+    if [ "$BUILD_OK" = true ]; then
+        echo ""
+        echo "--- cmake build (llama-quantize) ---"
+        if ! cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-quantize -j"$NCPU"; then
+            echo "   [WARN] llama-quantize build failed (GGUF export may be unavailable)"
         else
-            echo "   Cloning llama.cpp..."
-            rm -rf "$LLAMA_CPP_DIR"
-            if ! run_quiet_nofail "clone llama.cpp" git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_CPP_DIR"; then
-                BUILD_OK=false
-                FAILED_STEP="git clone"
+            QUANTIZE_BIN="$LLAMA_CPP_DIR/build/bin/llama-quantize"
+            if [ -f "$QUANTIZE_BIN" ]; then
+                ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
             fi
         fi
+    fi
 
-        # -- Step B: Detect CUDA and run cmake configure --
-        if [ "$BUILD_OK" = true ]; then
-            CMAKE_ARGS=""
-            # Detect CUDA: check nvcc on PATH, then common install locations
-            NVCC_PATH=""
-            if command -v nvcc &>/dev/null; then
-                NVCC_PATH="$(command -v nvcc)"
-            elif [ -x /usr/local/cuda/bin/nvcc ]; then
-                NVCC_PATH="/usr/local/cuda/bin/nvcc"
-                export PATH="/usr/local/cuda/bin:$PATH"
-            elif ls /usr/local/cuda-*/bin/nvcc &>/dev/null 2>&1; then
-                NVCC_PATH="$(ls -d /usr/local/cuda-*/bin/nvcc 2>/dev/null | sort -V | tail -1)"
-                export PATH="$(dirname "$NVCC_PATH"):$PATH"
-            fi
+    # Build timing
+    BUILD_END_TIME=$(date +%s)
+    BUILD_ELAPSED=$((BUILD_END_TIME - BUILD_START_TIME))
+    BUILD_MIN=$((BUILD_ELAPSED / 60))
+    BUILD_SEC=$((BUILD_ELAPSED % 60))
 
-            if [ -n "$NVCC_PATH" ]; then
-                echo "   Building with CUDA support (nvcc: $NVCC_PATH)..."
-                CMAKE_ARGS="-DGGML_CUDA=ON"
-            elif [ -d /usr/local/cuda ] || nvidia-smi &>/dev/null; then
-                echo "   CUDA driver detected but nvcc not found -- building CPU-only"
-                echo "   To enable GPU: install cuda-toolkit or add nvcc to PATH"
-            else
-                echo "   Building CPU-only (no CUDA detected)..."
-            fi
-
-            NCPU=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
-
-            echo "   Running cmake configure..."
-            if ! run_quiet_nofail "cmake configure" cmake -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" $CMAKE_ARGS; then
-                BUILD_OK=false
-                FAILED_STEP="cmake configure"
-            fi
+    # -- Summary --
+    echo ""
+    if [ "$BUILD_OK" = true ] && [ -f "$LLAMA_SERVER_BIN" ]; then
+        echo "[OK] llama-server built at $LLAMA_SERVER_BIN"
+        if [ -f "$LLAMA_CPP_DIR/llama-quantize" ] || [ -f "$LLAMA_CPP_DIR/build/bin/llama-quantize" ]; then
+            echo "[OK] llama-quantize available for GGUF export"
         fi
-
-        # -- Step C: Build llama-server --
-        if [ "$BUILD_OK" = true ]; then
-            echo "   Building llama-server (using $NCPU cores)..."
-            if ! run_quiet_nofail "build llama-server" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-server -j"$NCPU"; then
-                BUILD_OK=false
-                FAILED_STEP="cmake build (llama-server)"
-            fi
-        fi
-
-        # -- Step D: Build llama-quantize (optional, best-effort) --
-        if [ "$BUILD_OK" = true ]; then
-            echo "   Building llama-quantize..."
-            if ! run_quiet_nofail "build llama-quantize" cmake --build "$LLAMA_CPP_DIR/build" --config Release --target llama-quantize -j"$NCPU"; then
-                echo "   [WARN] llama-quantize build failed (GGUF export may be unavailable)"
-            else
-                QUANTIZE_BIN="$LLAMA_CPP_DIR/build/bin/llama-quantize"
-                if [ -f "$QUANTIZE_BIN" ]; then
-                    ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
-                fi
-            fi
-        fi
-
-        # -- Summary --
-        if [ "$BUILD_OK" = true ] && [ -f "$LLAMA_SERVER_BIN" ]; then
-            echo "✅ llama-server built at $LLAMA_SERVER_BIN"
-            if [ -f "$LLAMA_CPP_DIR/llama-quantize" ]; then
-                echo "✅ llama-quantize available for GGUF export"
-            fi
-        else
-            echo ""
-            echo "⚠️  llama-server build failed at step: $FAILED_STEP"
-            echo "   GGUF inference won't be available, but everything else works."
-            echo "   To retry: delete $LLAMA_CPP_DIR and re-run setup."
-        fi
+        echo "   Build time: ${BUILD_MIN}m ${BUILD_SEC}s"
+    else
+        echo "[FAILED] llama.cpp build failed at step: $FAILED_STEP (${BUILD_MIN}m ${BUILD_SEC}s)"
+        echo "         To retry: delete $LLAMA_CPP_DIR and re-run setup."
+        exit 1
     fi
 fi
 
@@ -378,13 +562,13 @@ fi
 # Done
 # ══════════════════════════════════════════════
 echo ""
-echo "╔══════════════════════════════════════╗"
-echo "║           Setup Complete!            ║"
-echo "╠══════════════════════════════════════╣"
+echo "+==============================================+"
+echo "|           Setup Complete!                    |"
+echo "+----------------------------------------------+"
 if [ "$IS_COLAB" = true ]; then
-    echo "║ Ready to start in Colab!             ║"
+    echo "| Ready to start in Colab!                     |"
 else
-    echo "║ Run:                                 ║"
-    echo "║   unsloth-roland-test studio         ║"
+    echo "| Run:                                         |"
+    echo "|   unsloth-roland-test studio                 |"
 fi
-echo "╚══════════════════════════════════════╝"
+echo "+==============================================+"

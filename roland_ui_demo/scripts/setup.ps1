@@ -99,7 +99,10 @@ function Get-PytorchCudaTag {
     if (-not $nvSmi) { return "cu124" }
 
     try {
-        $output = & nvidia-smi 2>$null
+        # 2>&1 | Out-String merges stderr into stdout then converts to a single
+        # string.  Plain 2>$null doesn't fully suppress stderr in PS 5.1 —
+        # ErrorRecord objects leak into $output and break the -match.
+        $output = & nvidia-smi 2>&1 | Out-String
         if ($output -match 'CUDA Version:\s+(\d+)\.(\d+)') {
             $major = [int]$Matches[1]
             $minor = [int]$Matches[2]

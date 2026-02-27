@@ -49,7 +49,7 @@ if (-not $HasGit) {
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
         try {
-            winget install Git.Git --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+            winget install Git.Git --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
             Refresh-Environment
             $HasGit = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
         } catch { }
@@ -89,7 +89,7 @@ try {
 if ($NeedNode) {
     Write-Host "Installing Node.js via winget..." -ForegroundColor Cyan
     try {
-        winget install OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements
+        winget install OpenJS.NodeJS.LTS --source winget --accept-package-agreements --accept-source-agreements
         Refresh-Environment
     } catch {
         Write-Host "[ERROR] Could not install Node.js automatically." -ForegroundColor Red
@@ -198,7 +198,7 @@ if (Test-Path $LlamaServerBin) {
         $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
         if ($HasWinget) {
             try {
-                winget install Kitware.CMake --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+                winget install Kitware.CMake --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
                 Refresh-Environment
                 $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
             } catch { }
@@ -296,7 +296,7 @@ if (Test-Path $LlamaServerBin) {
                     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
                     if ($HasWinget) {
                         Write-Host "   Installing CUDA Toolkit via winget (this may take several minutes)..." -ForegroundColor Cyan
-                        winget install --id=Nvidia.CUDA -e --accept-package-agreements --accept-source-agreements
+                        winget install --id=Nvidia.CUDA -e --source winget --accept-package-agreements --accept-source-agreements
                         Refresh-Environment
                         $NvccPath = Find-Nvcc
                         if ($NvccPath) {

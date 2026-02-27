@@ -115,7 +115,7 @@ Write-Host "[OK] git: $(git --version)" -ForegroundColor Green
 $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
 if (-not $HasCmake) {
     Write-Host "[ERROR] cmake not found. Install CMake and re-run." -ForegroundColor Red
-    Write-Host "        winget install Kitware.CMake" -ForegroundColor Yellow
+    Write-Host "        winget install Kitware.CMake --source winget" -ForegroundColor Yellow
     exit 1
 }
 Write-Host "[OK] cmake: $(cmake --version | Select-Object -First 1)" -ForegroundColor Green
@@ -179,7 +179,7 @@ if (-not $vsResult) {
     if ($HasWinget) {
         $prevEAPTemp = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
-        winget install Microsoft.VisualStudio.2022.BuildTools --accept-package-agreements --accept-source-agreements --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive --wait"
+        winget install Microsoft.VisualStudio.2022.BuildTools --source winget --accept-package-agreements --accept-source-agreements --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive --wait"
         $ErrorActionPreference = $prevEAPTemp
         $vsResult = Find-VsBuildTools
     }
@@ -247,7 +247,7 @@ if ($NvccPath) {
     $HasGpu = $null -ne (Get-Command nvidia-smi -ErrorAction SilentlyContinue)
     if ($HasGpu) {
         Write-Host "[WARN] NVIDIA GPU detected but CUDA Toolkit (nvcc) not found." -ForegroundColor Yellow
-        Write-Host "       Install: winget install --id=Nvidia.CUDA -e" -ForegroundColor Yellow
+        Write-Host "       Install: winget install --id=Nvidia.CUDA -e --source winget" -ForegroundColor Yellow
     } else {
         Write-Host "[INFO] No NVIDIA GPU detected -- building CPU-only" -ForegroundColor Gray
     }

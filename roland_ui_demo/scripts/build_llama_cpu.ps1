@@ -111,7 +111,7 @@ if (-not $vsResult) {
     if ($HasWinget) {
         $prevEAPTemp = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
-        winget install Microsoft.VisualStudio.2022.BuildTools --accept-package-agreements --accept-source-agreements --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive --wait"
+        winget install Microsoft.VisualStudio.2022.BuildTools --source winget --accept-package-agreements --accept-source-agreements --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive --wait"
         $ErrorActionPreference = $prevEAPTemp
         # Re-scan filesystem after install (don't trust vswhere catalog)
         $vsResult = Find-VsBuildTools

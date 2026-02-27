@@ -291,6 +291,14 @@ if (-not $IsPipInstall) {
     pip install -e $RepoRoot 2>&1 | Out-Null
 }
 
+# Pre-install PyTorch with CUDA support.
+# On Windows, the default PyPI torch wheel is CPU-only.
+# We need PyTorch's CUDA index to get GPU-enabled wheels.
+# PyTorch bundles its own CUDA runtime, so this works regardless
+# of whether the CUDA Toolkit is installed yet.
+Write-Host "   Installing PyTorch with CUDA support..." -ForegroundColor Cyan
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
+
 # Ordered heavy dependency installation
 Write-Host "   Running ordered dependency installation..." -ForegroundColor Cyan
 python -c "from roland_ui_demo.installer import run_install; exit(run_install())"

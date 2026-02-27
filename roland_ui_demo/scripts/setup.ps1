@@ -89,6 +89,31 @@ function Get-CudaComputeCapability {
     return $null
 }
 
+# Detect driver's max CUDA version from nvidia-smi and return the highest
+# compatible PyTorch CUDA index tag (e.g. "cu128").
+# PyTorch on Windows ships CPU-only by default from PyPI; CUDA wheels live at
+# https://download.pytorch.org/whl/<tag>. The tag must not exceed the driver's
+# capability: e.g. driver "CUDA Version: 12.9" → cu128 (not cu130).
+function Get-PytorchCudaTag {
+    $nvSmi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+    if (-not $nvSmi) { return "cu124" }
+
+    try {
+        $output = & nvidia-smi 2>$null
+        if ($output -match 'CUDA Version:\s+(\d+)\.(\d+)') {
+            $major = [int]$Matches[1]
+            $minor = [int]$Matches[2]
+            # PyTorch 2.10 offers: cu124, cu126, cu128, cu130
+            if ($major -ge 13) { return "cu130" }
+            if ($major -eq 12 -and $minor -ge 8) { return "cu128" }
+            if ($major -eq 12 -and $minor -ge 6) { return "cu126" }
+            return "cu124"
+        }
+    } catch { }
+
+    return "cu124"
+}
+
 # Find Visual Studio Build Tools for cmake -G flag.
 # Strategy: (1) vswhere, (2) scan filesystem (handles broken vswhere registration).
 # Returns @{ Generator = "Visual Studio 17 2022"; InstallPath = "C:\..."; Source = "..." } or $null.
@@ -269,19 +294,23 @@ if (-not $PythonCmd) {
 
 Write-Host "[OK] Using $PythonCmd ($(& $PythonCmd --version 2>&1))" -ForegroundColor Green
 
-# Venv + editable install only when running from repo
-if (-not $IsPipInstall) {
-    $RepoRoot = (Resolve-Path (Join-Path $ScriptDir "..\..")).Path
-    $VenvDir = Join-Path $RepoRoot ".venv"
-    if (Test-Path $VenvDir) { Remove-Item -Recurse -Force $VenvDir }
+# Always create a .venv for isolation -- even for pip installs.
+# Created in the current working directory (where user ran the command).
+$VenvDir = Join-Path (Get-Location) ".venv"
+if (-not (Test-Path $VenvDir)) {
+    Write-Host "   Creating virtual environment at $VenvDir..." -ForegroundColor Cyan
     & $PythonCmd -m venv $VenvDir
+} else {
+    Write-Host "   Reusing existing virtual environment at $VenvDir" -ForegroundColor Green
+}
 
-    $ActivateScript = Join-Path $VenvDir "Scripts\Activate.ps1"
-    . $ActivateScript
+$ActivateScript = Join-Path $VenvDir "Scripts\Activate.ps1"
+. $ActivateScript
+pip install --upgrade pip 2>&1 | Out-Null
 
-    pip install --upgrade pip 2>&1 | Out-Null
-
-    # Copy requirements into the Python package
+if (-not $IsPipInstall) {
+    # Running from repo: copy requirements and do editable install
+    $RepoRoot = (Resolve-Path (Join-Path $ScriptDir "..\..")).Path
     $ReqsSrc = Join-Path $RepoRoot "backend\requirements"
     $ReqsDst = Join-Path $PackageDir "requirements"
     if (-not (Test-Path $ReqsDst)) { New-Item -ItemType Directory -Path $ReqsDst | Out-Null }
@@ -296,8 +325,10 @@ if (-not $IsPipInstall) {
 # We need PyTorch's CUDA index to get GPU-enabled wheels.
 # PyTorch bundles its own CUDA runtime, so this works regardless
 # of whether the CUDA Toolkit is installed yet.
-Write-Host "   Installing PyTorch with CUDA support..." -ForegroundColor Cyan
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
+# The CUDA tag is chosen based on the driver's max supported CUDA version.
+$CuTag = Get-PytorchCudaTag
+Write-Host "   Installing PyTorch with CUDA support ($CuTag)..." -ForegroundColor Cyan
+pip install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CuTag"
 
 # Ordered heavy dependency installation
 Write-Host "   Running ordered dependency installation..." -ForegroundColor Cyan
@@ -419,6 +450,16 @@ if (Test-Path $LlamaServerBin) {
     $nvccBinDir = Split-Path $NvccPath -Parent
     if ($env:PATH -notlike "*$nvccBinDir*") {
         [Environment]::SetEnvironmentVariable('PATH', "$nvccBinDir;$env:PATH", 'Process')
+    }
+    # Persist nvcc bin dir to User PATH so it works in new terminals
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if (-not $userPath -or $userPath -notlike "*$nvccBinDir*") {
+        if ($userPath) {
+            [Environment]::SetEnvironmentVariable('Path', "$nvccBinDir;$userPath", 'User')
+        } else {
+            [Environment]::SetEnvironmentVariable('Path', "$nvccBinDir", 'User')
+        }
+        Write-Host "   Persisted CUDA bin dir to user PATH" -ForegroundColor Gray
     }
 
     Write-Host "[OK] CUDA Toolkit: $NvccPath" -ForegroundColor Green
@@ -582,5 +623,8 @@ Write-Host ""
 Write-Host "+==============================================+" -ForegroundColor Green
 Write-Host "|           Setup Complete!                    |" -ForegroundColor Green
 Write-Host "|                                              |" -ForegroundColor Green
-Write-Host "|  Run: unsloth-roland-test studio             |" -ForegroundColor Green
+Write-Host "|  Activate venv first:                        |" -ForegroundColor Green
+Write-Host "|    .\.venv\Scripts\Activate.ps1              |" -ForegroundColor Green
+Write-Host "|                                              |" -ForegroundColor Green
+Write-Host "|  Then run: unsloth-roland-test studio        |" -ForegroundColor Green
 Write-Host "+==============================================+" -ForegroundColor Green

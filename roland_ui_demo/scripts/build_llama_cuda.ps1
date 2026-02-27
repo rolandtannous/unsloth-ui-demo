@@ -120,35 +120,41 @@ if (-not $HasCmake) {
 }
 Write-Host "[OK] cmake: $(cmake --version | Select-Object -First 1)" -ForegroundColor Green
 
-# Visual Studio / Build Tools (cl.exe)
-$HasCl = $null -ne (Get-Command cl -ErrorAction SilentlyContinue)
-if (-not $HasCl) {
-    # Try loading VS environment via vswhere
-    $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-    if (Test-Path $vswhere) {
+# Visual Studio / Build Tools -- detect via vswhere so we can pass -G to cmake
+$CmakeGenerator = $null
+$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+if (Test-Path $vswhere) {
+    $vsInfo = & $vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property catalog_productLineVersion 2>$null
+    if ($vsInfo) {
+        $vsYear = $vsInfo.Trim()
+        $vsGeneratorMap = @{ '2022' = '17'; '2019' = '16'; '2017' = '15' }
+        $vsNum = $vsGeneratorMap[$vsYear]
+        if ($vsNum) {
+            $CmakeGenerator = "Visual Studio $vsNum $vsYear"
+            Write-Host "[OK] Visual Studio $vsYear (Build Tools) detected" -ForegroundColor Green
+        }
+    }
+    if (-not $CmakeGenerator) {
         $vsPath = & $vswhere -latest -property installationPath 2>$null
         if ($vsPath) {
-            $vcvars = Join-Path $vsPath "VC\Auxiliary\Build\vcvars64.bat"
-            if (Test-Path $vcvars) {
-                Write-Host "   Loading Visual Studio environment..." -ForegroundColor Gray
-                # Run vcvars64.bat and capture the resulting environment
-                $envOutput = cmd /c "`"$vcvars`" >nul 2>&1 && set" 2>$null
-                foreach ($line in $envOutput) {
-                    if ($line -match '^([^=]+)=(.*)$') {
-                        [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')
-                    }
+            $vsYear = & $vswhere -latest -property catalog_productLineVersion 2>$null
+            if ($vsYear) {
+                $vsYear = $vsYear.Trim()
+                $vsGeneratorMap = @{ '2022' = '17'; '2019' = '16'; '2017' = '15' }
+                $vsNum = $vsGeneratorMap[$vsYear]
+                if ($vsNum) {
+                    $CmakeGenerator = "Visual Studio $vsNum $vsYear"
+                    Write-Host "[OK] Visual Studio $vsYear detected (C++ tools may need install)" -ForegroundColor Yellow
                 }
-                $HasCl = $null -ne (Get-Command cl -ErrorAction SilentlyContinue)
             }
         }
     }
 }
-if ($HasCl) {
-    Write-Host "[OK] C++ compiler (cl.exe) available" -ForegroundColor Green
-} else {
-    Write-Host "[WARN] cl.exe not found -- cmake will use its default generator" -ForegroundColor Yellow
-    Write-Host "       If build fails, install Visual Studio Build Tools:" -ForegroundColor Yellow
-    Write-Host "       winget install Microsoft.VisualStudio.2022.BuildTools" -ForegroundColor Yellow
+if (-not $CmakeGenerator) {
+    Write-Host "[ERROR] Visual Studio Build Tools not found." -ForegroundColor Red
+    Write-Host "        Install with: winget install Microsoft.VisualStudio.2022.BuildTools" -ForegroundColor Red
+    Write-Host "        Then install 'Desktop development with C++' workload." -ForegroundColor Red
+    exit 1
 }
 
 Write-Host ""
@@ -241,6 +247,7 @@ Write-Host "--- cmake configure ---" -ForegroundColor Cyan
 $CmakeArgs = @(
     '-S', $LlamaCppDir,
     '-B', $BuildDir,
+    '-G', $CmakeGenerator,
     '-DBUILD_SHARED_LIBS=OFF'
 )
 
@@ -283,6 +290,7 @@ if ($cmakeExit -ne 0 -and $UseCuda) {
     $CmakeArgs = @(
         '-S', $LlamaCppDir,
         '-B', $BuildDir,
+        '-G', $CmakeGenerator,
         '-DBUILD_SHARED_LIBS=OFF',
         '-DGGML_CUDA=OFF'
     )
